@@ -1,6 +1,7 @@
 const bounds = @import("bounds.zig");
 const camera = @import("camera.zig");
 const draw_batches = @import("draw_batches.zig");
+const draw_order = @import("draw_order.zig");
 const fog = @import("fog.zig");
 const frustum = @import("frustum.zig");
 const joint_offsets = @import("joint_offsets.zig");
@@ -23,6 +24,12 @@ pub const ProjectionError = camera.ProjectionError;
 pub const DrawBatches = draw_batches.DrawBatches;
 pub const DrawBatchError = draw_batches.BuildError;
 pub const FaceCulling = draw_batches.FaceCulling;
+
+pub const Layer = draw_order.Layer;
+pub const DrawKey = draw_order.Key;
+pub const DrawOrderError = draw_order.OrderError;
+pub const depthOf = draw_order.depthOf;
+pub const orderDraws = draw_order.order;
 
 pub const FogSettings = fog.FogSettings;
 pub const VolumetricSettings = fog.VolumetricSettings;

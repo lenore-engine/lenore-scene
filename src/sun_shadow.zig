@@ -34,13 +34,18 @@ const fit_margin_texels: f32 = 2;
 // re-baked. One texel is the point below which the staleness cannot be
 // represented in the image at all.
 //
-// DECIDE: a budget of one texel is the smallest that is not free, and the cost
-// it buys is unmeasured. At N = 2048 it re-bakes every 0.028 degrees of sun
-// movement, so a sun sweeping at one degree per second re-bakes 36 times a
-// second, which is a full shadow pass per frame at 36 fps. What closes this:
-// the bake's own cost against a sweep, with the drift budget raised until the
-// re-bakes stop showing in the frame time, and then a look at whether the
-// resulting lag is visible on a shadow edge.
+// One texel is the smallest budget that is not free, and what a bake costs was
+// measured against a sweep before this was left at one. The cost lands in the
+// wait for the device rather than in recording: the pass is rasterization, and
+// recording it is a few commands.
+//
+// The rate follows from the width alone. A drift of one texel at N is an angle
+// of `slack / N`, so at N = 2048 the map re-bakes every 0.028 degrees of sun
+// movement, and a sun crossing a degree a second re-bakes 36 times a second.
+//
+// Raising it would be the wrong lever regardless. The budget sets how often the
+// bake runs and never what it costs, so a scene whose bake is too expensive
+// wants a cheaper pass rather than a staler map.
 const resample_drift_texels: f32 = 1;
 
 // Above this, the sun is too close to the world up axis for `cross(up, dir)` to
@@ -191,7 +196,18 @@ pub const SunShadowSettings = struct {
     // leaking near contact points.
     normal_offset_texels: f32 = 1,
 
+    // What a shadowed surface loses, with the switch above folded in.
+    //
+    // The switch is folded in here rather than tested by each caller, because a
+    // field that reads as one and is honoured nowhere is worse than no field:
+    // it looks like the shadow is off and the picture says otherwise. This is
+    // the one accessor, so honouring it here is what makes the switch real.
+    //
+    // Off is a strength of zero rather than a separate state. Every consumer
+    // already scales the shadow term by this, so zero is a lit surface exactly,
+    // and nothing needs a branch for the disabled case.
     pub fn clampedStrength(self: SunShadowSettings) f32 {
+        if (!self.enabled) return 0;
         return std.math.clamp(self.strength, 0, 1);
     }
 

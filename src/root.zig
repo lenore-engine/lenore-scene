@@ -19,6 +19,7 @@ pub const Camera = camera.Camera;
 pub const Anchor = camera.Anchor;
 pub const Placement = camera.Placement;
 pub const Projection = camera.Projection;
+pub const RayBasis = camera.RayBasis;
 pub const ProjectionError = camera.ProjectionError;
 
 pub const DrawBatches = draw_batches.DrawBatches;

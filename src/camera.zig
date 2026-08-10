@@ -94,6 +94,23 @@ pub const Placement = struct {
     }
 };
 
+// The world-space vectors a view ray is built from. For a device coordinate
+// (x, y), each in [-1, 1], the ray leaving the eye is `front + right * x + up * y`.
+//
+// The two axis vectors already carry the projection's half-extents at unit
+// depth, so a consumer needs neither the field of view nor the aspect ratio to
+// use them. That form is also what makes the ray affine in the device
+// coordinate, and therefore exact under interpolation across a triangle
+// covering the whole target.
+//
+// Unnormalized. The length varies across the frame, and a consumer that wants a
+// direction normalizes per pixel, which is where it is free.
+pub const RayBasis = struct {
+    right: Vec3,
+    up: Vec3,
+    front: Vec3,
+};
+
 pub const Camera = struct {
     anchor: Anchor = .{ .eye = .{ 0, 0, 0 } },
 
@@ -136,7 +153,10 @@ pub const Camera = struct {
         };
     }
 
-    pub fn projectionMatrix(self: Camera, aspect: f32) ProjectionError!zm.Mat {
+    // The projection's parameters, checked against the bounds above. Everything
+    // deriving from the projection comes through here, so a camera that yields a
+    // matrix and a camera that yields a ray basis are the same set of cameras.
+    fn checkedProjection(self: Camera, aspect: f32) ProjectionError!Projection.Perspective {
         if (!(aspect >= min_aspect and aspect < std.math.inf(f32))) return error.DegenerateAspect;
 
         switch (self.projection) {
@@ -147,14 +167,46 @@ pub const Camera = struct {
                 if (!(perspective.far >= perspective.near + min_depth_range))
                     return error.DegenerateProjection;
 
-                return zm.perspectiveFovRh(perspective.fov_y, aspect, perspective.near, perspective.far);
+                return perspective;
             },
         }
+    }
+
+    pub fn projectionMatrix(self: Camera, aspect: f32) ProjectionError!zm.Mat {
+        const perspective = try self.checkedProjection(aspect);
+        return zm.perspectiveFovRh(perspective.fov_y, aspect, perspective.near, perspective.far);
     }
 
     // The product the vertex path and the frustum extraction both take.
     pub fn viewProjection(self: Camera, aspect: f32) ProjectionError!zm.Mat {
         return zm.mul(self.placement().view(), try self.projectionMatrix(aspect));
+    }
+
+    // What a pass shading a direction rather than a surface reconstructs its
+    // rays from: a background covering the target is the one that exists.
+    //
+    // Built from the pose and the field of view rather than by inverting the
+    // view-projection. An inverse gives a world point, and the direction is then
+    // that point minus the eye: two quantities that grow with the distance from
+    // the world origin while their difference does not, so the subtraction loses
+    // the precision of the result exactly where the camera is far out. Nothing
+    // here subtracts.
+    pub fn rayBasis(self: Camera, aspect: f32) ProjectionError!RayBasis {
+        const perspective = try self.checkedProjection(aspect);
+        const place = self.placement();
+
+        // zmath 0.11.0-dev `perspectiveFovRh` scales clip x by
+        // `cot(fov_y / 2) / aspect` and clip y by `cot(fov_y / 2)`, so at unit
+        // depth a device coordinate of one is `tan(fov_y / 2)` up and that same
+        // distance times the aspect ratio across.
+        const half_height = @tan(perspective.fov_y / 2);
+        const half_width = half_height * aspect;
+
+        return .{
+            .right = place.right * @as(Vec3, @splat(half_width)),
+            .up = place.up * @as(Vec3, @splat(half_height)),
+            .front = place.front,
+        };
     }
 
     // Aim at a point without moving the eye. A point directly above or below

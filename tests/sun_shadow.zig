@@ -258,14 +258,61 @@ test "a sun direction with no direction in it is refused" {
 
 test "the look settings convert texels and bound the strength" {
     const fit = try SunShadowFit.compute(scene_bounds, sunAt(0), map_size);
-    const settings: scene.SunShadowSettings = .{ .normal_offset_texels = 3, .strength = 1.5 };
+    const settings: scene.SunShadowSettings = .{
+        .enabled = true,
+        .normal_offset_texels = 3,
+        .strength = 1.5,
+    };
     try testing.expectApproxEqAbs(3 * fit.texel_world_size, settings.normalOffsetWorld(&fit), 1e-7);
     try testing.expectEqual(@as(f32, 1), settings.clampedStrength());
 
-    const negative: scene.SunShadowSettings = .{ .strength = -0.5 };
+    const negative: scene.SunShadowSettings = .{ .enabled = true, .strength = -0.5 };
     try testing.expectEqual(@as(f32, 0), negative.clampedStrength());
 
+    // A setting nobody filled in is switched off, so it takes nothing from a
+    // surface. The offset is unaffected: it is a distance in the map's texels
+    // and means the same whether or not the lookup is read.
     const default: scene.SunShadowSettings = .{};
-    try testing.expectEqual(@as(f32, 1), default.clampedStrength());
+    try testing.expectEqual(@as(f32, 0), default.clampedStrength());
     try testing.expectApproxEqAbs(fit.texel_world_size, default.normalOffsetWorld(&fit), 1e-7);
+}
+
+test "the switch decides whether a surface loses anything at all" {
+    // A strength that is neither zero nor one, so a disabled setting returning
+    // the strength, or an enabled one returning a constant, both show.
+    const off: scene.SunShadowSettings = .{ .enabled = false, .strength = 0.75 };
+    const on: scene.SunShadowSettings = .{ .enabled = true, .strength = 0.75 };
+
+    try testing.expectEqual(@as(f32, 0), off.clampedStrength());
+    try testing.expectEqual(@as(f32, 0.75), on.clampedStrength());
+
+    // Off by default, so a setting nobody filled in draws no shadow.
+    const untouched: scene.SunShadowSettings = .{};
+    try testing.expectEqual(@as(f32, 0), untouched.clampedStrength());
+}
+
+test "an enabled setting still clamps a strength an asset got wrong" {
+    const over: scene.SunShadowSettings = .{ .enabled = true, .strength = 4 };
+    const under: scene.SunShadowSettings = .{ .enabled = true, .strength = -2 };
+
+    try testing.expectEqual(@as(f32, 1), over.clampedStrength());
+    try testing.expectEqual(@as(f32, 0), under.clampedStrength());
+}
+
+test "the normal offset follows the fit and not the switch" {
+    // The offset is a distance in the map's own texels, so it means the same
+    // thing whether or not the lookup is being read. Folding the switch into it
+    // as well would make a disabled shadow change what a re-enabled one looks
+    // like.
+    const fit: scene.SunShadowFit = .{
+        .view_proj = zm.identity(),
+        .sun_dir = .{ 0, 1, 0 },
+        .texel_world_size = 0.25,
+        .resample_chord_squared = 1,
+    };
+    const off: scene.SunShadowSettings = .{ .enabled = false, .normal_offset_texels = 2 };
+    const on: scene.SunShadowSettings = .{ .enabled = true, .normal_offset_texels = 2 };
+
+    try testing.expectEqual(@as(f32, 0.5), off.normalOffsetWorld(&fit));
+    try testing.expectEqual(@as(f32, 0.5), on.normalOffsetWorld(&fit));
 }

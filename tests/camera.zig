@@ -295,3 +295,68 @@ test "a projection that describes no volume is refused" {
     // The defaults are not among them.
     _ = try (Camera{}).projectionMatrix(aspect);
 }
+
+test "a ray from the basis lands on the device coordinate it was built for" {
+    const camera: Camera = .{ .anchor = .{ .eye = .{ -2, 1, 6 } }, .yaw = -1.4, .pitch = 0.2 };
+    const basis = try camera.rayBasis(aspect);
+    const view_proj = try camera.viewProjection(aspect);
+    const eye = camera.placement().position;
+
+    // The corners and the centre. This is the whole contract of the basis, and
+    // it is stated against the matrix the geometry path uses rather than against
+    // a second derivation of the same trigonometry: the two agree or a
+    // background drawn from one does not line up with a scene drawn from the
+    // other.
+    const corners = [_][2]f32{
+        .{ 0, 0 },
+        .{ 1, 1 },
+        .{ -1, 1 },
+        .{ 1, -1 },
+        .{ -1, -1 },
+        .{ 0.3, -0.7 },
+    };
+    for (corners) |device| {
+        const ray = basis.front +
+            basis.right * @as(res.Vec3, @splat(device[0])) +
+            basis.up * @as(res.Vec3, @splat(device[1]));
+        const point = eye + ray;
+        const clip = clipOf(view_proj, .{ point[0], point[1], point[2] });
+
+        try testing.expect(clip[3] > 0);
+        try testing.expectApproxEqAbs(device[0], clip[0] / clip[3], tolerance);
+        try testing.expectApproxEqAbs(device[1], clip[1] / clip[3], tolerance);
+    }
+}
+
+test "the ray basis does not depend on where the eye stands" {
+    const angles: Camera = .{ .yaw = 0.9, .pitch = -0.35 };
+    var here = angles;
+    here.anchor = .{ .eye = .{ 0, 0, 0 } };
+    var far_away = angles;
+    far_away.anchor = .{ .eye = .{ 1200, -400, 2500 } };
+
+    // What pins a background at infinity: translation moves the eye and not the
+    // ray, so the picture parallaxes only under rotation.
+    const from_here = try here.rayBasis(aspect);
+    const from_far = try far_away.rayBasis(aspect);
+    try expectVec(.{ from_here.right[0], from_here.right[1], from_here.right[2] }, from_far.right);
+    try expectVec(.{ from_here.up[0], from_here.up[1], from_here.up[2] }, from_far.up);
+    try expectVec(.{ from_here.front[0], from_here.front[1], from_here.front[2] }, from_far.front);
+}
+
+test "a ray basis is refused wherever a projection is" {
+    const camera: Camera = .{};
+    for ([_]f32{ 0, -1, 0.001, std.math.nan(f32), std.math.inf(f32) }) |bad|
+        try testing.expectError(error.DegenerateAspect, camera.rayBasis(bad));
+
+    const cases = [_]scene.Projection.Perspective{
+        .{ .fov_y = 0 },
+        .{ .fov_y = std.math.pi },
+        .{ .near = 0 },
+        .{ .near = 10, .far = 5 },
+    };
+    for (cases) |perspective| {
+        const degenerate: Camera = .{ .projection = .{ .perspective = perspective } };
+        try testing.expectError(error.DegenerateProjection, degenerate.rayBasis(aspect));
+    }
+}

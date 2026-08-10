@@ -13,6 +13,14 @@ fn blended(depth: f32) scene.DrawKey {
     return .{ .layer = .blended, .depth = depth };
 }
 
+fn culledSolid(depth: f32) scene.DrawKey {
+    return .{ .layer = .solid, .depth = depth, .visible = false };
+}
+
+fn culledBlended(depth: f32) scene.DrawKey {
+    return .{ .layer = .blended, .depth = depth, .visible = false };
+}
+
 // Filled into the destination so a test can tell an index that was written from
 // one that happened to hold the right value already.
 const untouched: u32 = 0xDEAD_BEEF;
@@ -31,7 +39,10 @@ test "solid draws come first and keep the order they arrived in" {
 
     const ordered = try scene.orderDraws(&keys, &storage);
 
-    try testing.expectEqualSlices(u32, &.{ 0, 2, 4, 3, 1 }, ordered);
+    try testing.expectEqualSlices(u32, &.{ 0, 2, 4, 3, 1 }, ordered.draws);
+    // The key's default. A caller that says nothing about visibility gets the
+    // whole list in front of the boundary.
+    try testing.expectEqual(keys.len, ordered.visible);
 }
 
 test "the blended run is recorded back to front" {
@@ -45,7 +56,7 @@ test "the blended run is recorded back to front" {
     const ordered = try scene.orderDraws(&keys, &storage);
 
     // Farthest first, so what is nearest is composited over what is behind it.
-    try testing.expectEqualSlices(u32, &.{ 1, 2, 0 }, ordered);
+    try testing.expectEqualSlices(u32, &.{ 1, 2, 0 }, ordered.draws);
 }
 
 test "equal depths keep their submission order" {
@@ -61,7 +72,7 @@ test "equal depths keep their submission order" {
 
     const ordered = try scene.orderDraws(&keys, &storage);
 
-    for (ordered, 0..) |index, submitted|
+    for (ordered.draws, 0..) |index, submitted|
         try testing.expectEqual(@as(u32, @intCast(submitted)), index);
 }
 
@@ -76,7 +87,7 @@ test "a stable order survives depths that repeat in runs" {
     const ordered = try scene.orderDraws(&keys, &storage);
 
     // Depths descend, and inside one run the submission order is kept.
-    for (ordered[1..], ordered[0 .. ordered.len - 1]) |current, previous| {
+    for (ordered.draws[1..], ordered.draws[0 .. ordered.draws.len - 1]) |current, previous| {
         try testing.expect(keys[previous].depth >= keys[current].depth);
         if (keys[previous].depth == keys[current].depth)
             try testing.expect(previous < current);
@@ -86,16 +97,17 @@ test "a stable order survives depths that repeat in runs" {
 test "a list of one layer is a permutation of every index" {
     const solids = [_]scene.DrawKey{ solid(3), solid(1), solid(2) };
     var storage: [3]u32 = @splat(untouched);
-    try testing.expectEqualSlices(u32, &.{ 0, 1, 2 }, try scene.orderDraws(&solids, &storage));
+    try testing.expectEqualSlices(u32, &.{ 0, 1, 2 }, (try scene.orderDraws(&solids, &storage)).draws);
 
     const blends = [_]scene.DrawKey{ blended(3), blended(1), blended(2) };
-    try testing.expectEqualSlices(u32, &.{ 0, 2, 1 }, try scene.orderDraws(&blends, &storage));
+    try testing.expectEqualSlices(u32, &.{ 0, 2, 1 }, (try scene.orderDraws(&blends, &storage)).draws);
 }
 
 test "an empty list orders into an empty prefix" {
     var storage: [2]u32 = @splat(untouched);
     const ordered = try scene.orderDraws(&.{}, &storage);
-    try testing.expectEqual(@as(usize, 0), ordered.len);
+    try testing.expectEqual(@as(usize, 0), ordered.draws.len);
+    try testing.expectEqual(@as(usize, 0), ordered.visible);
     // And nothing was written past it.
     try testing.expectEqual(untouched, storage[0]);
 }
@@ -153,5 +165,113 @@ test "a farther centre orders behind a nearer one whichever side of the eye it i
 
     const keys = [_]scene.DrawKey{ blended(near), blended(far) };
     var storage: [2]u32 = @splat(untouched);
-    try testing.expectEqualSlices(u32, &.{ 1, 0 }, try scene.orderDraws(&keys, &storage));
+    try testing.expectEqualSlices(u32, &.{ 1, 0 }, (try scene.orderDraws(&keys, &storage)).draws);
+}
+
+test "the four regions come out visible solid, visible blended, culled solid, culled blended" {
+    // Every region non-empty and interleaved on input, so a cursor that starts
+    // at the wrong offset cannot land on the right answer by accident.
+    const keys = [_]scene.DrawKey{
+        solid(9),
+        blended(1),
+        culledSolid(1),
+        culledBlended(9),
+        solid(5),
+        blended(9),
+    };
+    var storage: [keys.len]u32 = @splat(untouched);
+
+    const ordered = try scene.orderDraws(&keys, &storage);
+
+    // 0 and 4 are the visible solids in arrival order; 5 then 1 is the visible
+    // blended run farthest first; 2 and 3 are the culled half.
+    try testing.expectEqualSlices(u32, &.{ 0, 4, 5, 1, 2, 3 }, ordered.draws);
+    try testing.expectEqual(@as(usize, 4), ordered.visible);
+    try testing.expectEqualSlices(u32, &.{ 0, 4, 5, 1 }, ordered.visibleDraws());
+}
+
+test "the visible prefix keeps every solid before every blended" {
+    // The invariant the recorder validates. A culled solid sitting between two
+    // visible blended draws must not reach the prefix and break it.
+    const keys = [_]scene.DrawKey{
+        blended(2),
+        culledSolid(1),
+        solid(3),
+        culledBlended(4),
+        blended(8),
+    };
+    var storage: [keys.len]u32 = @splat(untouched);
+
+    const ordered = try scene.orderDraws(&keys, &storage);
+
+    var seen_blended = false;
+    for (ordered.visibleDraws()) |index| {
+        switch (keys[index].layer) {
+            .blended => seen_blended = true,
+            .solid => try testing.expect(!seen_blended),
+        }
+    }
+}
+
+test "the culled blended run is not sorted" {
+    // The same depths the visible case reorders. Nothing that composites reads
+    // this region, so sorting it would be work with no reader.
+    const keys = [_]scene.DrawKey{
+        culledBlended(1),
+        culledBlended(100),
+        culledBlended(10),
+    };
+    var storage: [keys.len]u32 = @splat(untouched);
+
+    const ordered = try scene.orderDraws(&keys, &storage);
+
+    try testing.expectEqualSlices(u32, &.{ 0, 1, 2 }, ordered.draws);
+    try testing.expectEqual(@as(usize, 0), ordered.visible);
+}
+
+test "a fully culled list still writes every index" {
+    // What a shadow bake reads when the camera faces away from everything. The
+    // prefix is empty and the list is not: dropping these would leave the bake
+    // with no casters and the scene with no shadows.
+    const keys = [_]scene.DrawKey{ culledSolid(1), culledBlended(2), culledSolid(3) };
+    var storage: [keys.len]u32 = @splat(untouched);
+
+    const ordered = try scene.orderDraws(&keys, &storage);
+
+    try testing.expectEqual(@as(usize, 0), ordered.visible);
+    try testing.expectEqualSlices(u32, &.{ 0, 2, 1 }, ordered.draws);
+}
+
+test "the output is a permutation whatever the mix of layer and visibility" {
+    // Four builders over one list, with the tail broken out of the pattern so
+    // no two regions share a length and a swapped pair of cursors cannot still
+    // produce a permutation.
+    const count = 40;
+    var keys: [count]scene.DrawKey = undefined;
+    for (&keys, 0..) |*key, index| {
+        const depth: f32 = @floatFromInt(count - index);
+        key.* = if (index > 30) solid(depth) else switch (index % 4) {
+            0 => solid(depth),
+            1 => blended(depth),
+            2 => culledSolid(depth),
+            else => culledBlended(depth),
+        };
+    }
+    var storage: [count]u32 = @splat(untouched);
+
+    const ordered = try scene.orderDraws(&keys, &storage);
+
+    var seen: [count]bool = @splat(false);
+    for (ordered.draws) |index| {
+        try testing.expect(!seen[index]);
+        seen[index] = true;
+    }
+    for (seen) |hit| try testing.expect(hit);
+
+    // And the boundary agrees with the keys it was counted from.
+    var expected: usize = 0;
+    for (keys) |key| expected += @intFromBool(key.visible);
+    try testing.expectEqual(expected, ordered.visible);
+    for (ordered.visibleDraws()) |index| try testing.expect(keys[index].visible);
+    for (ordered.draws[ordered.visible..]) |index| try testing.expect(!keys[index].visible);
 }

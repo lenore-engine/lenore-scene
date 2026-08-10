@@ -1,6 +1,13 @@
-// Turns a final visible draw order into contiguous instance runs. Culling and
-// sorting happen before this step; reordering here would invalidate transparent
-// depth order. Only adjacent draws with identical GPU-facing state coalesce.
+// Turns a final draw order into contiguous instance runs. Culling and sorting
+// happen before this step; reordering here would invalidate transparent depth
+// order. Only adjacent draws with identical GPU-facing state coalesce.
+//
+// The order arrives partitioned, visible draws first, and a run is not allowed
+// to span that boundary. A batch is therefore wholly visible or wholly culled,
+// and the visible ones are a prefix: a camera pass records that prefix and a
+// shadow bake records all of them. Letting one run straddle the boundary would
+// leave a batch that neither pass can record correctly, since an instance range
+// is one number and cannot say that half of it is on screen.
 //
 // The resource identifiers are parameters because scene planning only compares
 // their identity. It neither resolves them nor depends on the backend that owns
@@ -18,9 +25,16 @@ pub const FaceCulling = enum {
 };
 
 pub const BuildError = error{
-    // An order entry does not name a draw. The order can be a culled subset, but
-    // every surviving index must still belong to the source list.
+    // An order entry does not name a draw. Every index in it must belong to the
+    // source list, whichever side of the visibility boundary it lies on.
     DrawIndexOutOfRange,
+
+    // The boundary is a position in `order` and is used to slice it, so a value
+    // past its end would produce a prefix longer than the list. It cannot be
+    // justified by construction here: the count and the order arrive as two
+    // independent arguments and nothing in the signature says they were produced
+    // together.
+    VisibleCountOutOfRange,
 
     // first_instance and instance_count are u32 in the draw contract. Refuse a
     // list that cannot be represented before narrowing any offset into it.
@@ -56,24 +70,45 @@ pub fn DrawBatches(comptime MeshId: type, comptime MaterialId: type) type {
             instance_count: u32,
         };
 
+        // What `build` wrote, with the batches a camera pass records first.
+        pub const Batches = struct {
+            batches: []Batch,
+            // How many of `batches` are visible. The rest hold the draws behind
+            // the camera's boundary and are recorded by the passes that do not
+            // use the camera.
+            visible: usize,
+
+            pub fn visibleBatches(self: Batches) []Batch {
+                return self.batches[0..self.visible];
+            }
+        };
+
         // Coalesces adjacent entries of `order` without changing their order.
+        // `visible` is how many of its leading entries the camera can see, which
+        // is where a run is cut whether or not the state continues across it.
+        //
         // The function validates the complete input and output capacity before
         // writing the first batch, so every error leaves `destination`
         // untouched.
         pub fn build(
             draws: []const Draw,
             order: []const u32,
+            visible: usize,
             destination: []Batch,
-        ) BuildError![]Batch {
+        ) BuildError!Batches {
             if (order.len > std.math.maxInt(u32)) return error.TooManyInstances;
+            if (visible > order.len) return error.VisibleCountOutOfRange;
 
             var batch_count: usize = 0;
+            var visible_batches: usize = 0;
             var previous: ?Draw = null;
-            for (order) |draw_index| {
+            for (order, 0..) |draw_index, index| {
                 if (draw_index >= draws.len) return error.DrawIndexOutOfRange;
                 const current = draws[draw_index];
-                if (previous == null or !sameState(previous.?, current))
+                if (previous == null or index == visible or !sameState(previous.?, current)) {
                     batch_count += 1;
+                    if (index < visible) visible_batches += 1;
+                }
                 previous = current;
             }
             if (batch_count > destination.len) return error.BatchCapacityExceeded;
@@ -83,7 +118,9 @@ pub fn DrawBatches(comptime MeshId: type, comptime MaterialId: type) type {
             while (first < order.len) {
                 const representative = draws[order[first]];
                 var end = first + 1;
-                while (end < order.len and sameState(representative, draws[order[end]]))
+                while (end < order.len and
+                    end != visible and
+                    sameState(representative, draws[order[end]]))
                     end += 1;
 
                 destination[batch_index] = .{
@@ -97,7 +134,7 @@ pub fn DrawBatches(comptime MeshId: type, comptime MaterialId: type) type {
                 first = end;
             }
             std.debug.assert(batch_index == batch_count);
-            return destination[0..batch_count];
+            return .{ .batches = destination[0..batch_count], .visible = visible_batches };
         }
 
         fn sameState(a: Draw, b: Draw) bool {

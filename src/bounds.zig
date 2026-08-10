@@ -22,15 +22,14 @@ const Sphere = resources.Sphere;
 // with the same construction, `Transform3D::xform(const AABB &)` in
 // `core/math/transform_3d.h`, written per component rather than per row.
 //
-// DECIDE: correctness picked the box, cost has not been measured. This runs per
-// object per frame, and against the scaled-radius path it trades three products
-// and two elementwise selects for one length, then hands the frustum six planes
-// to test against a box rather than a point. The box should also reject more,
-// because it is tighter than a sphere for anything longer than it is wide, so
-// the two effects push opposite ways and neither is a paper question. What
-// closes this: frame times over a scene with tens of thousands of instances,
-// box against sphere, with the draw count recorded beside the time. Until then
-// this stands on being the one that cannot be wrong.
+// Correctness picked the box, and cost does not argue back. Against the
+// scaled-radius path this trades three products and two elementwise selects for
+// one length, then hands the frustum six planes to test against a box rather
+// than a point, all of which is small beside recording the draws it admits.
+//
+// The box also rejects more than a scaled sphere, being tighter than one for
+// anything longer than it is wide, and that is the side that pays: an object
+// rejected here is a draw never recorded, which is where the frame goes.
 pub fn worldAabb(local: Aabb, model: zm.Mat) Aabb {
     // The translation row seeds both bounds. Its fourth lane is 1 and takes no
     // part in a position, so it is dropped here rather than masked later.

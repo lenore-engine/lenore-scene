@@ -15,6 +15,17 @@ fn draw(mesh: MeshId, material: MaterialId, face_culling: scene.FaceCulling) Pla
     };
 }
 
+// Every draw visible. What a test about coalescing wants: the boundary is
+// exercised by the tests that name it, and passing it here would only repeat
+// the order's own length at six call sites.
+fn buildAllVisible(
+    draws: []const Plan.Draw,
+    order: []const u32,
+    destination: []Plan.Batch,
+) !Plan.Batches {
+    return Plan.build(draws, order, order.len, destination);
+}
+
 const sentinel: Plan.Batch = .{
     .mesh = .prop,
     .material = .metal,
@@ -35,7 +46,7 @@ test "adjacent draws coalesce only when every batch key agrees" {
     };
     var storage: [draws.len]Plan.Batch = undefined;
 
-    const batches = try Plan.build(&draws, &.{ 0, 1, 2, 3, 4, 5, 6 }, &storage);
+    const batches = (try buildAllVisible(&draws, &.{ 0, 1, 2, 3, 4, 5, 6 }, &storage)).batches;
 
     try testing.expectEqual(@as(usize, 6), batches.len);
     try testing.expectEqualDeep(Plan.Batch{
@@ -84,7 +95,7 @@ test "adjacent draws coalesce only when every batch key agrees" {
     }, batches[5]);
 }
 
-test "a reordered culled subset defines both batch order and instance offsets" {
+test "the given order defines both batch order and instance offsets" {
     const draws = [_]Plan.Draw{
         draw(.body, .cloth, .back),
         draw(.prop, .metal, .back),
@@ -93,7 +104,7 @@ test "a reordered culled subset defines both batch order and instance offsets" {
     };
     var storage: [draws.len]Plan.Batch = @splat(sentinel);
 
-    const batches = try Plan.build(&draws, &.{ 2, 0, 3 }, &storage);
+    const batches = (try buildAllVisible(&draws, &.{ 2, 0, 3 }, &storage)).batches;
 
     try testing.expectEqual(@as(usize, 2), batches.len);
     try testing.expectEqualDeep(Plan.Batch{
@@ -117,7 +128,7 @@ test "a reordered culled subset defines both batch order and instance offsets" {
 test "an empty order produces an empty plan without touching storage" {
     var storage = [_]Plan.Batch{sentinel};
 
-    const batches = try Plan.build(&.{}, &.{}, &storage);
+    const batches = (try buildAllVisible(&.{}, &.{}, &storage)).batches;
 
     try testing.expectEqual(@as(usize, 0), batches.len);
     try testing.expectEqualDeep(sentinel, storage[0]);
@@ -131,7 +142,7 @@ test "an invalid draw index is refused before any batch is written" {
     // changed the first destination entry before discovering the error.
     try testing.expectError(
         error.DrawIndexOutOfRange,
-        Plan.build(&draws, &.{ 0, 1 }, &storage),
+        buildAllVisible(&draws, &.{ 0, 1 }, &storage),
     );
     try testing.expectEqualDeep(sentinel, storage[0]);
     try testing.expectEqualDeep(sentinel, storage[1]);
@@ -146,7 +157,7 @@ test "insufficient batch capacity is refused without a partial plan" {
 
     try testing.expectError(
         error.BatchCapacityExceeded,
-        Plan.build(&draws, &.{ 0, 1 }, &storage),
+        buildAllVisible(&draws, &.{ 0, 1 }, &storage),
     );
     try testing.expectEqualDeep(sentinel, storage[0]);
 }
@@ -158,7 +169,91 @@ test "exact batch capacity is accepted" {
     };
     var storage: [2]Plan.Batch = undefined;
 
-    const batches = try Plan.build(&draws, &.{ 0, 1 }, &storage);
+    const batches = (try buildAllVisible(&draws, &.{ 0, 1 }, &storage)).batches;
 
     try testing.expectEqual(@as(usize, storage.len), batches.len);
+}
+
+test "a run of one state is cut at the visibility boundary" {
+    // The whole reason the boundary is passed in. Every draw here shares a key,
+    // so without the cut they coalesce into one batch whose instance range spans
+    // both sides and which neither pass can record: a camera pass would draw the
+    // culled half and a bake reading the same range would be right by accident.
+    const draws: [4]Plan.Draw = @splat(draw(.body, .cloth, .back));
+    var storage: [draws.len]Plan.Batch = @splat(sentinel);
+
+    const built = try Plan.build(&draws, &.{ 0, 1, 2, 3 }, 2, &storage);
+
+    try testing.expectEqual(@as(usize, 2), built.batches.len);
+    try testing.expectEqualDeep(Plan.Batch{
+        .mesh = .body,
+        .material = .cloth,
+        .face_culling = .back,
+        .first_instance = 0,
+        .instance_count = 2,
+    }, built.batches[0]);
+    try testing.expectEqualDeep(Plan.Batch{
+        .mesh = .body,
+        .material = .cloth,
+        .face_culling = .back,
+        .first_instance = 2,
+        .instance_count = 2,
+    }, built.batches[1]);
+    // Batches, not draws: two draws are visible and they are one batch.
+    try testing.expectEqual(@as(usize, 1), built.visible);
+    try testing.expectEqual(@as(usize, 1), built.visibleBatches().len);
+}
+
+test "the visible count is a count of batches" {
+    // Three visible draws over two states, then two culled draws over one. A
+    // count that reported draws would say three here.
+    const draws = [_]Plan.Draw{
+        draw(.body, .cloth, .back),
+        draw(.body, .cloth, .back),
+        draw(.head, .skin, .front),
+        draw(.prop, .metal, .none),
+        draw(.prop, .metal, .none),
+    };
+    var storage: [draws.len]Plan.Batch = @splat(sentinel);
+
+    const built = try Plan.build(&draws, &.{ 0, 1, 2, 3, 4 }, 3, &storage);
+
+    try testing.expectEqual(@as(usize, 3), built.batches.len);
+    try testing.expectEqual(@as(usize, 2), built.visible);
+    for (built.visibleBatches(), built.batches[0..2]) |a, b|
+        try testing.expectEqualDeep(a, b);
+}
+
+test "a boundary at either end leaves one side empty" {
+    const draws = [_]Plan.Draw{
+        draw(.body, .cloth, .back),
+        draw(.head, .skin, .front),
+    };
+    var storage: [draws.len]Plan.Batch = @splat(sentinel);
+
+    // Nothing visible: the camera faces away and every batch is still built,
+    // because the bake reads them.
+    const none = try Plan.build(&draws, &.{ 0, 1 }, 0, &storage);
+    try testing.expectEqual(@as(usize, 2), none.batches.len);
+    try testing.expectEqual(@as(usize, 0), none.visible);
+    try testing.expectEqual(@as(usize, 0), none.visibleBatches().len);
+
+    // Everything visible, which is what the boundary at the end means.
+    const all = try Plan.build(&draws, &.{ 0, 1 }, 2, &storage);
+    try testing.expectEqual(@as(usize, 2), all.batches.len);
+    try testing.expectEqual(@as(usize, 2), all.visible);
+}
+
+test "a boundary past the order is refused before anything is written" {
+    const draws = [_]Plan.Draw{
+        draw(.body, .cloth, .back),
+        draw(.head, .skin, .front),
+    };
+    var storage: [draws.len]Plan.Batch = @splat(sentinel);
+
+    try testing.expectError(
+        error.VisibleCountOutOfRange,
+        Plan.build(&draws, &.{ 0, 1 }, 3, &storage),
+    );
+    for (storage) |slot| try testing.expectEqualDeep(sentinel, slot);
 }

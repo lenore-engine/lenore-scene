@@ -25,6 +25,7 @@ pub const ProjectionError = camera.ProjectionError;
 pub const DrawBatches = draw_batches.DrawBatches;
 pub const DrawBatchError = draw_batches.BuildError;
 pub const FaceCulling = draw_batches.FaceCulling;
+pub const FrontFace = draw_batches.FrontFace;
 
 pub const Layer = draw_order.Layer;
 pub const DrawKey = draw_order.Key;

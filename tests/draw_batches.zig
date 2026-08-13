@@ -12,6 +12,7 @@ fn draw(mesh: MeshId, material: MaterialId, face_culling: scene.FaceCulling) Pla
         .mesh = mesh,
         .material = material,
         .face_culling = face_culling,
+        .front_face = .counter_clockwise,
     };
 }
 
@@ -30,6 +31,7 @@ const sentinel: Plan.Batch = .{
     .mesh = .prop,
     .material = .metal,
     .face_culling = .none,
+    .front_face = .counter_clockwise,
     .first_instance = 99,
     .instance_count = 99,
 };
@@ -53,6 +55,7 @@ test "adjacent draws coalesce only when every batch key agrees" {
         .mesh = .body,
         .material = .cloth,
         .face_culling = .back,
+        .front_face = .counter_clockwise,
         .first_instance = 0,
         .instance_count = 2,
     }, batches[0]);
@@ -60,6 +63,7 @@ test "adjacent draws coalesce only when every batch key agrees" {
         .mesh = .body,
         .material = .cloth,
         .face_culling = .front,
+        .front_face = .counter_clockwise,
         .first_instance = 2,
         .instance_count = 1,
     }, batches[1]);
@@ -67,6 +71,7 @@ test "adjacent draws coalesce only when every batch key agrees" {
         .mesh = .body,
         .material = .skin,
         .face_culling = .front,
+        .front_face = .counter_clockwise,
         .first_instance = 3,
         .instance_count = 1,
     }, batches[2]);
@@ -74,6 +79,7 @@ test "adjacent draws coalesce only when every batch key agrees" {
         .mesh = .head,
         .material = .skin,
         .face_culling = .front,
+        .front_face = .counter_clockwise,
         .first_instance = 4,
         .instance_count = 1,
     }, batches[3]);
@@ -81,6 +87,7 @@ test "adjacent draws coalesce only when every batch key agrees" {
         .mesh = .head,
         .material = .skin,
         .face_culling = .none,
+        .front_face = .counter_clockwise,
         .first_instance = 5,
         .instance_count = 1,
     }, batches[4]);
@@ -90,6 +97,7 @@ test "adjacent draws coalesce only when every batch key agrees" {
         .mesh = .body,
         .material = .cloth,
         .face_culling = .back,
+        .front_face = .counter_clockwise,
         .first_instance = 6,
         .instance_count = 1,
     }, batches[5]);
@@ -111,6 +119,7 @@ test "the given order defines both batch order and instance offsets" {
         .mesh = .body,
         .material = .cloth,
         .face_culling = .back,
+        .front_face = .counter_clockwise,
         .first_instance = 0,
         .instance_count = 2,
     }, batches[0]);
@@ -118,6 +127,7 @@ test "the given order defines both batch order and instance offsets" {
         .mesh = .head,
         .material = .skin,
         .face_culling = .front,
+        .front_face = .counter_clockwise,
         .first_instance = 2,
         .instance_count = 1,
     }, batches[1]);
@@ -189,6 +199,7 @@ test "a run of one state is cut at the visibility boundary" {
         .mesh = .body,
         .material = .cloth,
         .face_culling = .back,
+        .front_face = .counter_clockwise,
         .first_instance = 0,
         .instance_count = 2,
     }, built.batches[0]);
@@ -196,6 +207,7 @@ test "a run of one state is cut at the visibility boundary" {
         .mesh = .body,
         .material = .cloth,
         .face_culling = .back,
+        .front_face = .counter_clockwise,
         .first_instance = 2,
         .instance_count = 2,
     }, built.batches[1]);
@@ -256,4 +268,31 @@ test "a boundary past the order is refused before anything is written" {
         Plan.build(&draws, &.{ 0, 1 }, 3, &storage),
     );
     for (storage) |slot| try testing.expectEqualDeep(sentinel, slot);
+}
+
+test "a mirrored instance is its own batch even where every other key agrees" {
+    // Same mesh, same material, same culling. The winding is what differs, and
+    // it is a state of the draw rather than of the geometry: one instance of a
+    // mesh can be mirrored while another is not.
+    const draws = [_]Plan.Draw{
+        draw(.body, .cloth, .back),
+        .{ .mesh = .body, .material = .cloth, .face_culling = .back, .front_face = .clockwise },
+        draw(.body, .cloth, .back),
+    };
+    var storage: [draws.len]Plan.Batch = undefined;
+
+    const batches = (try buildAllVisible(&draws, &.{ 0, 1, 2 }, &storage)).batches;
+
+    try testing.expectEqual(@as(usize, 3), batches.len);
+    try testing.expectEqual(scene.FrontFace.counter_clockwise, batches[0].front_face);
+    try testing.expectEqual(scene.FrontFace.clockwise, batches[1].front_face);
+    try testing.expectEqual(scene.FrontFace.counter_clockwise, batches[2].front_face);
+
+    // Two mirrored instances beside each other still coalesce: the key is
+    // compared, not the geometry.
+    const paired = [_]Plan.Draw{ draws[1], draws[1] };
+    var pair_storage: [paired.len]Plan.Batch = undefined;
+    const coalesced = (try buildAllVisible(&paired, &.{ 0, 1 }, &pair_storage)).batches;
+    try testing.expectEqual(@as(usize, 1), coalesced.len);
+    try testing.expectEqual(@as(u32, 2), coalesced[0].instance_count);
 }

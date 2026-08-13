@@ -15,13 +15,33 @@
 
 const std = @import("std");
 
-// Which polygon side the recorder drops. A reflected transform exchanges front
-// and back, while a double-sided or conservatively skinned draw drops neither.
-// This belongs in the batch key: one draw command has one culling state.
+// Which polygon side the recorder drops. A double-sided or conservatively
+// skinned draw drops neither. This belongs in the batch key: one draw command
+// has one culling state.
 pub const FaceCulling = enum {
     none,
     back,
     front,
+};
+
+// Which winding the rasterizer calls the front of a triangle.
+//
+// glTF 2.0, section 3.7.4: the determinant of the node's global transform
+// defines the winding order of that primitive, counter-clockwise where it is
+// positive and clockwise where it is not. Part of that product is baked into
+// the geometry when it is loaded; what is left is the instance transform, whose
+// sign is per instance and per frame, which is what puts this in the batch key
+// beside the culling state.
+//
+// A state of its own rather than exchanging `back` for `front` above. The two
+// would drop the same triangles, but the winding also decides what the fragment
+// stage is told about facing, and a double-sided material draws with no culling
+// at all and still asks: there is no side to exchange there, and folding the
+// two would light a mirrored double-sided surface as though its back were its
+// front.
+pub const FrontFace = enum {
+    counter_clockwise,
+    clockwise,
 };
 
 pub const BuildError = error{
@@ -57,6 +77,7 @@ pub fn DrawBatches(comptime MeshId: type, comptime MaterialId: type) type {
             mesh: MeshId,
             material: MaterialId,
             face_culling: FaceCulling,
+            front_face: FrontFace,
         };
 
         // One command's scene-owned policy. The backend resolves the resource
@@ -66,6 +87,7 @@ pub fn DrawBatches(comptime MeshId: type, comptime MaterialId: type) type {
             mesh: MeshId,
             material: MaterialId,
             face_culling: FaceCulling,
+            front_face: FrontFace,
             first_instance: u32,
             instance_count: u32,
         };
@@ -127,6 +149,7 @@ pub fn DrawBatches(comptime MeshId: type, comptime MaterialId: type) type {
                     .mesh = representative.mesh,
                     .material = representative.material,
                     .face_culling = representative.face_culling,
+                    .front_face = representative.front_face,
                     .first_instance = @intCast(first),
                     .instance_count = @intCast(end - first),
                 };
@@ -140,7 +163,8 @@ pub fn DrawBatches(comptime MeshId: type, comptime MaterialId: type) type {
         fn sameState(a: Draw, b: Draw) bool {
             return a.mesh == b.mesh and
                 a.material == b.material and
-                a.face_culling == b.face_culling;
+                a.face_culling == b.face_culling and
+                a.front_face == b.front_face;
         }
     };
 }

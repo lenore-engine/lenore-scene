@@ -12,9 +12,6 @@
 // the entity can only hold one of them.
 
 const std = @import("std");
-const resources = @import("lenore-resources");
-
-const SkeletonPose = resources.SkeletonPose;
 
 // The joint base of an entity that has no pose.
 //
@@ -35,22 +32,27 @@ pub const JointOffsetError = error{
     JointCapacityExceeded,
 };
 
-// Assigns each posed entity a contiguous run of joint slots, in draw order,
+// Assigns each skinned entity a contiguous run of joint slots, in draw order,
 // within a frame array of `capacity` slots, and returns how many slots the frame
-// uses. Entities with no pose take no capacity and receive `no_joint_base`.
+// uses. Entities with no joints take no capacity and receive `no_joint_base`.
 //
-// The result is a pure function of the poses' joint counts, so the same draw
-// list assigns the same offsets every time it is planned.
+// Counts rather than poses, because an entity's joint count is not its
+// skeleton's: several skins may share one skeleton, and each reads its own run
+// of it. Taking the pose here would have made every such entity claim the whole
+// skeleton's joints.
+//
+// The result is a pure function of those counts, so the same draw list assigns
+// the same offsets every time it is planned.
 pub fn assignJointOffsets(
-    poses: []const ?*const SkeletonPose,
+    joint_counts: []const ?u32,
     offsets: []u32,
     capacity: u32,
 ) JointOffsetError!u32 {
-    if (offsets.len != poses.len) return error.OffsetCountMismatch;
+    if (offsets.len != joint_counts.len) return error.OffsetCountMismatch;
 
     var used: u32 = 0;
-    for (poses, offsets) |entry, *offset| {
-        const pose = entry orelse {
+    for (joint_counts, offsets) |entry, *offset| {
+        const count = entry orelse {
             offset.* = no_joint_base;
             continue;
         };
@@ -60,12 +62,10 @@ pub fn assignJointOffsets(
         // cannot wrap. Narrowing the count to the offset's width first and then
         // adding is the form that can, and a wrapped sum passes the very test it
         // is here to fail.
-        const count = pose.jointCount();
         if (count > capacity - used) return error.JointCapacityExceeded;
 
         offset.* = used;
-        // In range because the test above bounded count by capacity - used.
-        used += @intCast(count);
+        used += count;
     }
     return used;
 }

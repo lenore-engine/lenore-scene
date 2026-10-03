@@ -68,6 +68,61 @@ test "the basis stays orthonormal everywhere, the poles included" {
     try expectVec(.{ 1, 0, 0 }, placement.up);
 }
 
+test "a roll turns the basis about the view direction and leaves it alone" {
+    const level: Camera = .{ .yaw = 0.4, .pitch = -0.7 };
+    const rolled: Camera = .{ .yaw = 0.4, .pitch = -0.7, .roll = 0.6 };
+
+    const before = level.placement();
+    const after = rolled.placement();
+    try expectVec(.{ before.front[0], before.front[1], before.front[2] }, after.front);
+
+    // The pair turns by exactly the angle asked for, inside the plane it spans.
+    try testing.expectApproxEqAbs(@cos(@as(f32, 0.6)), dot(before.right, after.right), tolerance);
+    try testing.expectApproxEqAbs(@cos(@as(f32, 0.6)), dot(before.up, after.up), tolerance);
+    try testing.expectApproxEqAbs(-@sin(@as(f32, 0.6)), dot(before.up, after.right), tolerance);
+    try testing.expectApproxEqAbs(@sin(@as(f32, 0.6)), dot(before.right, after.up), tolerance);
+}
+
+test "a rolled basis is still orthonormal and still right-handed" {
+    const angles = [_]f32{ -3.0, -1.6, -std.math.pi / 2.0, -0.4, 0, 0.7, std.math.pi / 2.0, 2.9 };
+    for (angles) |yaw| {
+        for (angles) |pitch| {
+            for (angles) |roll| {
+                const camera: Camera = .{ .yaw = yaw, .pitch = pitch, .roll = roll };
+                try expectOrthonormal(camera.placement());
+            }
+        }
+    }
+}
+
+test "a quarter roll puts the world's up on the view's right" {
+    // Level, looking down -Z, so the world's up axis and the camera's are the
+    // same vector before the roll. A quarter turn clockwise from behind the
+    // camera leans that up toward the left of the picture, which is the same
+    // statement as the camera's own right pointing at it.
+    const camera: Camera = .{ .roll = std.math.pi / 2.0 };
+    const placement = camera.placement();
+    try expectVec(.{ 0, 0, -1 }, placement.front);
+    try expectVec(.{ 0, -1, 0 }, placement.right);
+    try expectVec(.{ 1, 0, 0 }, placement.up);
+
+    // And through the matrix, where it is what the picture actually does: the
+    // world's up axis leaves view space along -X, so it is drawn to the left.
+    const view = placement.view();
+    const above = zm.mul(zm.f32x4(0, 1, -1, 1), view);
+    try testing.expectApproxEqAbs(-1.0, above[0], tolerance);
+    try testing.expectApproxEqAbs(0.0, above[1], tolerance);
+}
+
+test "aiming leaves the roll where it stands" {
+    var camera: Camera = .{ .anchor = .{ .eye = .{ 0, 0, 0 } }, .roll = 0.25 };
+    camera.lookAt(.{ 3, 1, -2 });
+    try testing.expectEqual(@as(f32, 0.25), camera.roll);
+
+    camera.orbitAround(.{ -4, 0, 5 });
+    try testing.expectEqual(@as(f32, 0.25), camera.roll);
+}
+
 test "yaw sweeps the horizon from +X toward +Z" {
     const east: Camera = .{ .yaw = 0 };
     try expectVec(.{ 1, 0, 0 }, east.placement().front);

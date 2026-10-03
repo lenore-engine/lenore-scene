@@ -1,7 +1,7 @@
 // Where the view is taken from and what it can see: an authored pose, a
 // projection, and the matrices derived from them.
 //
-// Nothing here is cached. The pose is four numbers and the derivation is two
+// Nothing here is cached. The pose is five numbers and the derivation is three
 // sine-cosine pairs and a matrix product, so recomputing it once a frame costs
 // less than the bookkeeping that would keep a cache honest, and there is no
 // state that can be stale.
@@ -124,6 +124,16 @@ pub const Camera = struct {
     // controller that wants one imposes it for its own reasons.
     pitch: f32 = 0,
 
+    // Rotation about the view direction, in radians, positive turning the camera
+    // clockwise as seen from behind it: the eye's up leans toward its right and
+    // the picture leans the other way. Zero leaves the horizon level, which is
+    // what every camera aimed by yaw and pitch alone wants, so nothing that only
+    // aims has to name it.
+    //
+    // Not clamped and not wrapped, like the two above. It is the third angle of
+    // a pose rather than a controller's tilt limit.
+    roll: f32 = 0,
+
     projection: Projection = .{ .perspective = .{} },
 
     // The basis is written out rather than taken from cross products, which is
@@ -137,10 +147,20 @@ pub const Camera = struct {
         const sin_pitch = @sin(self.pitch);
 
         const front: Vec3 = .{ cos_yaw * cos_pitch, sin_pitch, sin_yaw * cos_pitch };
-        const right: Vec3 = .{ -sin_yaw, 0, cos_yaw };
+        const level_right: Vec3 = .{ -sin_yaw, 0, cos_yaw };
         // right x front, expanded. The yaw terms cancel to one on the middle
         // lane, so this is unit length wherever the other two are.
-        const up: Vec3 = .{ -cos_yaw * sin_pitch, cos_pitch, -sin_yaw * sin_pitch };
+        const level_up: Vec3 = .{ -cos_yaw * sin_pitch, cos_pitch, -sin_yaw * sin_pitch };
+
+        // The roll turns that pair about `front`, which it leaves alone. A
+        // rotation inside the plane the two span keeps both unit and keeps them
+        // perpendicular, so the basis is exactly as orthonormal as it was and
+        // the singularity `level_right` was written out to avoid stays absent:
+        // nothing here is a cross product of two vectors that can be parallel.
+        const cos_roll = @cos(self.roll);
+        const sin_roll = @sin(self.roll);
+        const right = level_right * @as(Vec3, @splat(cos_roll)) - level_up * @as(Vec3, @splat(sin_roll));
+        const up = level_up * @as(Vec3, @splat(cos_roll)) + level_right * @as(Vec3, @splat(sin_roll));
 
         return .{
             .position = switch (self.anchor) {
@@ -213,6 +233,10 @@ pub const Camera = struct {
     // leaves the azimuth alone rather than resetting it, because that azimuth is
     // still the direction the camera faces as soon as it tilts back down, and a
     // point coincident with the eye names no direction and changes nothing.
+    //
+    // The roll is left where it stands. A point names a direction and says
+    // nothing about which way is up, so levelling here would be a second
+    // decision taken by a function nobody asked one of.
     pub fn lookAt(self: *Camera, point: Vec3) void {
         const eye = self.placement().position;
         const to_point = point - eye;

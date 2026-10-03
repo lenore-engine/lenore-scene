@@ -2,6 +2,7 @@ const bounds = @import("bounds.zig");
 const camera = @import("camera.zig");
 const draw_batches = @import("draw_batches.zig");
 const draw_order = @import("draw_order.zig");
+const exposure = @import("exposure.zig");
 const fog = @import("fog.zig");
 const frustum = @import("frustum.zig");
 const joint_offsets = @import("joint_offsets.zig");
@@ -32,6 +33,9 @@ pub const DrawKey = draw_order.Key;
 pub const DrawOrderError = draw_order.OrderError;
 pub const depthOf = draw_order.depthOf;
 pub const orderDraws = draw_order.order;
+
+pub const Photocell = exposure.Photocell;
+pub const Iris = exposure.Iris;
 
 pub const FogSettings = fog.FogSettings;
 pub const VolumetricSettings = fog.VolumetricSettings;

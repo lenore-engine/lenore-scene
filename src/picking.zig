@@ -64,6 +64,11 @@ pub const Intersection = struct {
     // for instance, rejects these. A caller that wants an object keeps them and
     // ranks them last, or the box around a room swallows every click inside it.
     inside: bool,
+
+    // Distance along the ray to the face it leaves through, in the same units
+    // as `t`. `exit - t` is how much of the box the ray crosses, which is what
+    // a shot passing through a wall pays for.
+    exit: f32,
 };
 
 // The ray through a pointer position, in world space.
@@ -162,7 +167,7 @@ pub fn intersectAabb(origin: Vec3, direction: Vec3, box: Aabb) ?Intersection {
     // equivalent to the containment below for any finite ray, which is worth
     // knowing and not worth writing: the test states the property, where reading
     // it off the clamp derives it.
-    return .{ .t = enter, .inside = contains(origin, box) };
+    return .{ .t = enter, .inside = contains(origin, box), .exit = exit };
 }
 
 fn contains(point: Vec3, box: Aabb) bool {

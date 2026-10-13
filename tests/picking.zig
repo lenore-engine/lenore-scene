@@ -141,12 +141,15 @@ test "a ray meets the near face of a box ahead of it" {
     const hit = scene.intersectAabb(.{ 0, 0, 10 }, .{ 0, 0, -1 }, unit).?;
     try testing.expectApproxEqAbs(9.0, hit.t, tolerance);
     try testing.expect(!hit.inside);
+    // And leaves through the far one, the box's depth later.
+    try testing.expectApproxEqAbs(11.0, hit.exit, tolerance);
 }
 
 test "a ray starting inside a box reports zero and says so" {
     const hit = scene.intersectAabb(.{ 0, 0, 0 }, .{ 0, 0, -1 }, unit).?;
     try testing.expectEqual(@as(f32, 0), hit.t);
     try testing.expect(hit.inside);
+    try testing.expectApproxEqAbs(1.0, hit.exit, tolerance);
 
     // On the face is inside: the box is closed, and a caller ranking surface
     // hits ahead of interior ones needs the boundary to fall on one side.
@@ -187,6 +190,8 @@ test "a diagonal ray enters through the face it actually reaches" {
     // which is outside the box on X.
     const hit = scene.intersectAabb(.{ 4, 0, 2 }, .{ -1, 0, -0.5 }, unit).?;
     try testing.expectApproxEqAbs(3.0, hit.t, tolerance);
+    // And leaves by the first slab it runs out of: X at t = 5, before Z at 6.
+    try testing.expectApproxEqAbs(5.0, hit.exit, tolerance);
     try expectVec(.{ 1, 0, 0.5 }, res.Vec3{ 4, 0, 2 } + res.Vec3{ -1, 0, -0.5 } * @as(res.Vec3, @splat(hit.t)));
 }
 
@@ -200,6 +205,8 @@ test "a placed box is tested in its own space" {
 
     // And `t` stays a world distance: the point it names is on the world face.
     try expectVec(.{ 0, 0, 2 }, shot.at(hit.t));
+    // So does the exit, four metres of box later.
+    try testing.expectApproxEqAbs(12.0, hit.exit, tolerance);
 }
 
 test "a rotated box is met exactly rather than through something enclosing it" {

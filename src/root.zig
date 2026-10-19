@@ -83,6 +83,8 @@ pub const intersectInstance = picking.intersectInstance;
 pub const SunShadowFit = sun_shadow.SunShadowFit;
 pub const SunShadowSettings = sun_shadow.SunShadowSettings;
 pub const FitError = sun_shadow.FitError;
+pub const sun_resample_degrees = sun_shadow.resample_degrees;
+pub const sun_fade_seconds = sun_shadow.fade_seconds;
 
 pub const Transform = transform.Transform;
 pub const rotationFromEulerZyx = transform.rotationFromEulerZyx;

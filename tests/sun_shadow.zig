@@ -147,50 +147,29 @@ fn sunAt(angle: f32) res.Vec3 {
     return .{ @sin(angle), 0, @cos(angle) };
 }
 
-// The angle at which a fit at this resolution goes stale, one texel of drift.
-fn staleAngle(resolution: f32) f32 {
-    return 1.0 / (resolution - 2 * margin_texels);
-}
+// The angle at which a fit goes stale, in radians.
+const stale_angle = std.math.degreesToRadians(scene.sun_resample_degrees);
 
-test "the map goes stale once the sun has moved by the drift budget" {
+test "the map goes stale once the sun has turned by the budget" {
     const fit = try SunShadowFit.compute(scene_bounds, sunAt(0), map_size);
-    const threshold = staleAngle(@floatFromInt(map_size));
 
     try testing.expect(!fit.stale(sunAt(0)));
-    try testing.expect(!fit.stale(sunAt(0.5 * threshold)));
-    try testing.expect(fit.stale(sunAt(2 * threshold)));
+    try testing.expect(!fit.stale(sunAt(0.99 * stale_angle)));
+    try testing.expect(fit.stale(sunAt(1.01 * stale_angle)));
     // Both directions of rotation, since a test written on a squared chord
     // passes trivially in one and a signed comparison would not.
-    try testing.expect(fit.stale(sunAt(-2 * threshold)));
-
-    // Why the threshold is a chord and not the cosine a dot product gives: a
-    // quarter of a texel of movement rounds that dot product to exactly 1, so a
-    // cosine threshold has nothing left to compare, while the chord the same
-    // movement produces still carries six digits.
-    const barely = sunAt(0.25 * threshold);
-    try testing.expectEqual(@as(f32, 1), @reduce(.Add, barely * fit.sun_dir));
-    const offset = barely - fit.sun_dir;
-    try testing.expect(@reduce(.Add, offset * offset) > 1e-9);
-    try testing.expect(!fit.stale(barely));
+    try testing.expect(fit.stale(sunAt(-1.01 * stale_angle)));
+    try testing.expect(!fit.stale(sunAt(-0.99 * stale_angle)));
 }
 
-test "staleness follows the resolution and not the scene" {
-    // A finer map has smaller texels, so the same movement is worth more of
-    // them. An angle between the two thresholds separates them.
-    const angle = 0.75 * staleAngle(@floatFromInt(map_size));
+test "staleness is an angle, the same at any resolution and scene size" {
+    // The lookup follows the sun between bakes, so what bounds a map's life is
+    // how far the correction reaches, an angle; neither the texel size nor the
+    // scene enters it.
     const coarse = try SunShadowFit.compute(scene_bounds, sunAt(0), map_size);
     const fine = try SunShadowFit.compute(scene_bounds, sunAt(0), 4 * map_size);
-    try testing.expect(!coarse.stale(sunAt(angle)));
-    try testing.expect(fine.stale(sunAt(angle)));
-
-    // The scene radius cancels out of the drift entirely: a texel and the
-    // movement it measures both scale with it. Two scenes three orders of
-    // magnitude apart therefore share a threshold exactly.
-    const huge = try SunShadowFit.compute(
-        .{ .centre = .{ 0, 0, 0 }, .radius = 4000 },
-        sunAt(0),
-        map_size,
-    );
+    const huge = try SunShadowFit.compute(.{ .centre = .{ 0, 0, 0 }, .radius = 4000 }, sunAt(0), map_size);
+    try testing.expectEqual(coarse.resample_chord_squared, fine.resample_chord_squared);
     try testing.expectEqual(coarse.resample_chord_squared, huge.resample_chord_squared);
 }
 
@@ -275,6 +254,68 @@ test "the look settings convert texels and bound the strength" {
     const default: scene.SunShadowSettings = .{};
     try testing.expectEqual(@as(f32, 0), default.clampedStrength());
     try testing.expectApproxEqAbs(fit.texel_world_size, default.normalOffsetWorld(&fit), 1e-7);
+}
+
+// Where a world point lands in the map, as the lookup addresses it: clip x
+// and y mapped from [-1, 1] to [0, 1], and clip z as the depth.
+fn mapPoint(fit: SunShadowFit, point: res.Vec3) [3]f32 {
+    const clip = clipOf(fit, point);
+    return .{ clip[0] * 0.5 + 0.5, clip[1] * 0.5 + 0.5, clip[2] };
+}
+
+test "the parallax is zero for the sun the map was baked for" {
+    const sun = unit(.{ 0.3, 0.8, -0.5 });
+    const fit = try SunShadowFit.compute(scene_bounds, sun, map_size);
+    const shift = fit.parallax(sun);
+    try testing.expectApproxEqAbs(@as(f32, 0), shift[0], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0), shift[1], 1e-6);
+    // The length of the direction does not enter.
+    const long = fit.parallax(sun * @as(res.Vec3, @splat(40)));
+    try testing.expectApproxEqAbs(@as(f32, 0), long[0], 1e-6);
+}
+
+test "the parallax finds the texel a ray toward the turned sun climbs over" {
+    // Checked against the projection itself rather than the formula: a point
+    // and a point further along the ray toward the turned sun, both carried
+    // through the baked matrix. The lateral distance between their texels has
+    // to be the shift times the depth between them, for either turn, for a
+    // ray that climbs a little or a lot, and for a turn about any axis.
+    const baked = unit(.{ 0.3, 0.8, -0.5 });
+    const fit = try SunShadowFit.compute(scene_bounds, baked, map_size);
+    const receiver: res.Vec3 = scene_bounds.centre + res.Vec3{ 0.7, -1.1, 0.4 };
+    const turns = [_][3]f32{ .{ 0.004, 0, 0 }, .{ -0.004, 0, 0 }, .{ 0, 0.003, 0.002 }, .{ 0.001, -0.002, -0.003 } };
+    for (turns) |turn| {
+        const current = unit(baked + @as(res.Vec3, turn));
+        const shift = fit.parallax(current);
+        for ([_]f32{ 0.2, 1.5, 4 }) |distance| {
+            const caster = receiver + current * @as(res.Vec3, @splat(distance));
+            const from = mapPoint(fit, receiver);
+            const to = mapPoint(fit, caster);
+            const climbed = from[2] - to[2];
+            try testing.expect(climbed > 0);
+            try testing.expectApproxEqAbs(to[0] - from[0], shift[0] * climbed, 1e-6);
+            try testing.expectApproxEqAbs(to[1] - from[1], shift[1] * climbed, 1e-6);
+        }
+    }
+}
+
+test "the parallax is the tangent of the turn" {
+    // Width and depth share one scale in this map, so a ray turned by an angle
+    // from the baked direction crosses the map at that angle's tangent. At the
+    // budget this is what sizes the lookup's reach.
+    const fit = try SunShadowFit.compute(scene_bounds, sunAt(0), map_size);
+    const shift = fit.parallax(sunAt(stale_angle));
+    const length = @sqrt(shift[0] * shift[0] + shift[1] * shift[1]);
+    try testing.expectApproxEqRel(@tan(stale_angle), length, 1e-3);
+}
+
+test "a direction with no use in it makes no shift" {
+    const fit = try SunShadowFit.compute(scene_bounds, sunAt(0), map_size);
+    const nan = std.math.nan(f32);
+    try testing.expectEqual([2]f32{ 0, 0 }, fit.parallax(.{ nan, 0, 1 }));
+    // Turned past the horizon of the map: the ray no longer climbs.
+    try testing.expectEqual([2]f32{ 0, 0 }, fit.parallax(sunAt(std.math.pi * 0.75)));
+    try testing.expectEqual([2]f32{ 0, 0 }, fit.parallax(.{ 0, 0, 0 }));
 }
 
 test "the sun's size becomes a tangent, held to a sun and refused when not a number" {

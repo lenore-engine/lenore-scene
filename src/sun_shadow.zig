@@ -30,23 +30,35 @@ const Vec3 = resources.Vec3;
 // servers/rendering/renderer_scene_cull.cpp:2294.
 const fit_margin_texels: f32 = 2;
 
-// How far the projection of a point may drift, in texels, before the map is
-// re-baked. One texel is the point below which the staleness cannot be
-// represented in the image at all.
+// How far the sun may turn from the direction a map was baked for before the
+// map is baked again, in degrees.
 //
-// One texel is the smallest budget that is not free, and what a bake costs was
-// measured against a sweep before this was left at one. The cost lands in the
-// wait for the device rather than in recording: the pass is rasterization, and
-// recording it is a few commands.
+// The lookup follows the sun between bakes by parallax (`parallax`), so a
+// bake is no longer what moves a shadow's edge. What a bake does is redraw the
+// map on a turned grid, and every edge then lands on that grid with a new
+// rasterization error of up to half a texel. A sun turning slowly enough moves
+// a ground shadow by less than that per bake, and an edge baked often walks
+// backwards as often as forwards. Baking seldom is the cure, so the budget is
+// an angle the correction stays good over and not a drift in texels.
 //
-// The rate follows from the width alone. A drift of one texel at N is an angle
-// of `slack / N`, so at N = 2048 the map re-bakes every 0.028 degrees of sun
-// movement, and a sun crossing a degree a second re-bakes 36 times a second.
+// What bounds it is the lookup's reach. A caster at the map's near plane
+// shifts a point's lookup by the tangent of the angle times the point's depth,
+// at most `tan(angle)` of the map's width; at 0.25 degrees on a 2048 map that
+// is 9 texels, inside the search the lookup does around every point. The
+// correction is first order in the angle, and its error is in the estimate of
+// how deep the caster is, not in the angle.
 //
-// Raising it would be the wrong lever regardless. The budget sets how often the
-// bake runs and never what it costs, so a scene whose bake is too expensive
-// wants a cheaper pass rather than a staler map.
-const resample_drift_texels: f32 = 1;
+// Provisional: 0.25 degrees is two seconds of a sun crossing a 48-minute day's
+// 360 degrees, chosen to be checked on screen and lengthened while complex
+// edges hold.
+pub const resample_degrees: f32 = 0.25;
+
+// How long the lookup fades from the map before a bake to the one it made, in
+// seconds. Each map is corrected to the current sun, so the two agree but for
+// their rasterization, and the fade spreads that half-texel difference over a
+// time too long to see as a step. Seconds and not the sun's angle, so a sun
+// that stops does not stop a fade halfway.
+pub const fade_seconds: f32 = 0.25;
 
 // Above this, the sun is too close to the world up axis for `cross(up, dir)` to
 // be well conditioned, and the fit uses the world X axis instead. The limit is
@@ -140,18 +152,14 @@ pub const SunShadowFit = struct {
         const view = zm.lookAtRh(eye, centre, up);
         const proj = zm.orthographicRh(2 * radius, 2 * radius, 0, 2 * radius);
 
-        // One shadow texel is 2 * bounds.radius * slack / N world units, and
-        // rotating the light by theta moves the projection of a point by up to
-        // 2 * bounds.radius * theta. The radius cancels between them: the drift
-        // in texels is theta * N / slack, which is why the budget can be stated
-        // in texels and the angle falls out of the resolution alone.
-        const drift_angle = resample_drift_texels * slack / resolution;
+        // The chord between two unit directions is 2 * sin(theta / 2).
+        const chord = 2 * @sin(std.math.degreesToRadians(resample_degrees) / 2);
 
         return .{
             .view_proj = zm.mul(view, proj),
             .texel_world_size = 2 * radius / resolution,
             .sun_dir = .{ dir[0], dir[1], dir[2] },
-            .resample_chord_squared = drift_angle * drift_angle,
+            .resample_chord_squared = chord * chord,
         };
     }
 
@@ -159,13 +167,10 @@ pub const SunShadowFit = struct {
     // up with it. `sun_dir` needs no particular length.
     //
     // The threshold is a squared chord and not the cosine a dot product would
-    // give, because f32 runs out of room just below the threshold. Measured at a
-    // one-texel budget and N = 2048, where the angle is 4.89e-4: its cosine is
-    // 1 - 1.19e-7, two ulps below 1, and the cosine of a quarter of it rounds to
-    // exactly 1. The chord between two unit vectors is 2 * sin(theta / 2), which
-    // is theta to a part in 10^8 at this scale, and it is computed from
-    // differences that keep their digits. The same quarter-texel movement is
-    // 1.5e-8 as a squared chord, six digits clear of zero.
+    // give, because f32 has little room just below 1. At `resample_degrees` the
+    // cosine is 1 - 9.5e-6, about 160 ulps below 1, and a tenth of the angle is
+    // under two. The chord between two unit vectors is 2 * sin(theta / 2), which
+    // is computed from differences that keep their digits at any angle.
     //
     // A direction that is zero or not finite makes the chord not a number, every
     // comparison against it false, and the answer "not stale". That keeps the
@@ -174,6 +179,34 @@ pub const SunShadowFit = struct {
         const length = @sqrt(@reduce(.Add, sun_dir * sun_dir));
         const offset = sun_dir / @as(Vec3, @splat(length)) - self.sun_dir;
         return @reduce(.Add, offset * offset) > self.resample_chord_squared;
+    }
+
+    // How far a lookup in this fit's map moves per unit of depth between the
+    // point and its caster, for a sun at `sun_dir` rather than the one the map
+    // was baked for: the map coordinates (x, y) gain this times the depth the
+    // caster stands in front of the point. Zero for the baked direction.
+    //
+    // The ray from a point toward the sun crosses the baked map's depths
+    // obliquely once the sun has turned. Where it has climbed by a depth d it
+    // stands over a texel displaced by d times this, and the caster found there
+    // is the one that shades the point now (Turchyn, "Parallax-Corrected Cached
+    // Shadow Maps", GPU Zen 2, 2019, chapter III-2, equation 2.4).
+    //
+    // Map coordinates are the lookup's: x and y are clip x and y mapped from
+    // [-1, 1] to [0, 1], depth is clip z. A direction carried through the
+    // matrix with no translation is how far those move per world unit along
+    // it, so the shift per unit of depth is the lateral half-rate over the
+    // depth rate, which falls as the ray climbs toward the sun.
+    //
+    // `sun_dir` needs no particular length. One that is not finite, or that has
+    // turned so far that the ray no longer climbs, returns no shift: the lookup
+    // then reads the map as baked, which is what it did before the correction.
+    pub fn parallax(self: *const SunShadowFit, sun_dir: Vec3) [2]f32 {
+        const along = zm.mul(zm.f32x4(sun_dir[0], sun_dir[1], sun_dir[2], 0), self.view_proj);
+        const climb = -along[2];
+        const length = @sqrt(@reduce(.Add, sun_dir * sun_dir));
+        if (!(climb > 1e-3 * length) or !std.math.isFinite(climb)) return .{ 0, 0 };
+        return .{ 0.5 * along[0] / climb, 0.5 * along[1] / climb };
     }
 };
 

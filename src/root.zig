@@ -1,4 +1,5 @@
 const ambient_occlusion = @import("ambient_occlusion.zig");
+const atmosphere = @import("atmosphere.zig");
 const bounds = @import("bounds.zig");
 const camera = @import("camera.zig");
 const draw_batches = @import("draw_batches.zig");
@@ -17,6 +18,16 @@ const transform = @import("transform.zig");
 pub const AmbientOcclusionSettings = ambient_occlusion.AmbientOcclusionSettings;
 pub const AmbientOcclusionReconstruction = ambient_occlusion.Reconstruction;
 pub const AmbientOcclusionReconstructionError = ambient_occlusion.ReconstructionError;
+
+pub const Atmosphere = atmosphere.Atmosphere;
+pub const AtmosphereError = atmosphere.AtmosphereError;
+pub const Tables = atmosphere.Tables;
+pub const planet_radius_offset = atmosphere.planet_radius_offset;
+pub const transmittance = atmosphere.transmittance;
+pub const skyRadiance = atmosphere.skyRadiance;
+pub const skyIrradiance = atmosphere.skyIrradiance;
+pub const skyIrradianceResolution = atmosphere.skyIrradianceResolution;
+pub const sunAtGround = atmosphere.sunAtGround;
 
 pub const worldAabb = bounds.worldAabb;
 pub const unionAabb = bounds.unionAabb;
@@ -75,3 +86,5 @@ pub const FitError = sun_shadow.FitError;
 
 pub const Transform = transform.Transform;
 pub const rotationFromEulerZyx = transform.rotationFromEulerZyx;
+
+pub const split_sum = @import("split_sum.zig");

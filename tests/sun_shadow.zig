@@ -277,6 +277,15 @@ test "the look settings convert texels and bound the strength" {
     try testing.expectApproxEqAbs(fit.texel_world_size, default.normalOffsetWorld(&fit), 1e-7);
 }
 
+test "the sun's size becomes a tangent, held to a sun and refused when not a number" {
+    const sun: scene.SunShadowSettings = .{ .source_degrees = 0.267 };
+    try testing.expectApproxEqAbs(@tan(std.math.degreesToRadians(@as(f32, 0.267))), sun.sourceTangent(), 1e-9);
+    try testing.expectEqual(@as(f32, 0), (scene.SunShadowSettings{}).sourceTangent());
+    try testing.expectEqual(@as(f32, 0), (scene.SunShadowSettings{ .source_degrees = -1 }).sourceTangent());
+    try testing.expectEqual(@as(f32, 0), (scene.SunShadowSettings{ .source_degrees = std.math.nan(f32) }).sourceTangent());
+    try testing.expectApproxEqAbs(@tan(std.math.degreesToRadians(@as(f32, 5))), (scene.SunShadowSettings{ .source_degrees = 40 }).sourceTangent(), 1e-7);
+}
+
 test "the switch decides whether a surface loses anything at all" {
     // A strength that is neither zero nor one, so a disabled setting returning
     // the strength, or an enabled one returning a constant, both show.

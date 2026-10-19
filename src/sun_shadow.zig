@@ -196,6 +196,13 @@ pub const SunShadowSettings = struct {
     // leaking near contact points.
     normal_offset_texels: f32 = 1,
 
+    // The sun's angular radius in degrees, which widens the shadow's edge with
+    // the caster's distance from the surface. The sun seen from the Earth is
+    // about 0.267. Zero leaves the edge the filter alone gives, a couple of
+    // texels wide. Clamped to [0, 5]: wider is no longer a sun, and the search
+    // for casters would spread its taps too thin.
+    source_degrees: f32 = 0,
+
     // What a shadowed surface loses, with the switch above folded in.
     //
     // The switch is folded in here rather than tested by each caller, because a
@@ -209,6 +216,11 @@ pub const SunShadowSettings = struct {
     pub fn clampedStrength(self: SunShadowSettings) f32 {
         if (!self.enabled) return 0;
         return std.math.clamp(self.strength, 0, 1);
+    }
+
+    pub fn sourceTangent(self: SunShadowSettings) f32 {
+        const degrees = if (std.math.isFinite(self.source_degrees)) std.math.clamp(self.source_degrees, 0, 5) else 0;
+        return @tan(std.math.degreesToRadians(degrees));
     }
 
     pub fn normalOffsetWorld(self: SunShadowSettings, fit: *const SunShadowFit) f32 {

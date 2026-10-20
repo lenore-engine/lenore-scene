@@ -55,10 +55,16 @@ pub const resample_degrees: f32 = 0.25;
 
 // How long the lookup fades from the map before a bake to the one it made, in
 // seconds. Each map is corrected to the current sun, so the two agree but for
-// their rasterization, and the fade spreads that half-texel difference over a
-// time too long to see as a step. Seconds and not the sun's angle, so a sun
-// that stops does not stop a fade halfway.
-pub const fade_seconds: f32 = 0.25;
+// their rasterization, and the fade spreads that difference over time. Up to
+// half a texel on an edge, but on a near-straight edge the new grid moves
+// whole steps of its staircase, which a quarter of a second showed as a jump.
+// Seconds and not the sun's angle, so a sun that stops does not stop a fade
+// halfway.
+//
+// While it runs both maps are read, so it costs the second map's lookup for
+// this share of every `resample_degrees`. The older map then serves the
+// budget's angle plus this long's turn, which the lookup's reach covers.
+pub const fade_seconds: f32 = 1.0;
 
 // Above this, the sun is too close to the world up axis for `cross(up, dir)` to
 // be well conditioned, and the fit uses the world X axis instead. The limit is

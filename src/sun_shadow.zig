@@ -110,6 +110,9 @@ pub const SunShadowFit = struct {
     // without being retuned.
     texel_world_size: f32,
 
+    // World distance from near (zero) to far, for converting caster bias to depth.
+    depth_span: f32,
+
     // Unit, and the direction the fit was computed for.
     sun_dir: Vec3,
 
@@ -164,6 +167,7 @@ pub const SunShadowFit = struct {
         return .{
             .view_proj = zm.mul(view, proj),
             .texel_world_size = 2 * radius / resolution,
+            .depth_span = 2 * radius,
             .sun_dir = .{ dir[0], dir[1], dir[2] },
             .resample_chord_squared = chord * chord,
         };
@@ -217,7 +221,7 @@ pub const SunShadowFit = struct {
 };
 
 // Runtime look controls for sun shadows, authored per scene rather than baked
-// into the fit: none of them changes the map, only how it is read.
+// into the fit: the bias clamp controls the bake, the others its lookup.
 pub const SunShadowSettings = struct {
     // Off by default: a shadow map is a cost a scene opts into.
     enabled: bool = false,
@@ -234,6 +238,11 @@ pub const SunShadowSettings = struct {
     // acne, so one texel of offset escapes it. Raising it trades that for light
     // leaking near contact points.
     normal_offset_texels: f32 = 1,
+
+    // Maximum caster depth offset along the sun, in map texels, to keep steep
+    // faces from detaching their shadows. Clamped to [0.05, 8]: Vulkan treats
+    // zero as unclamped. Non-finite values use the default half texel.
+    bias_clamp_texels: f32 = 0.5,
 
     // The sun's angular radius in degrees, which widens the shadow's edge with
     // the caster's distance from the surface. The sun seen from the Earth is
@@ -260,6 +269,17 @@ pub const SunShadowSettings = struct {
     pub fn sourceTangent(self: SunShadowSettings) f32 {
         const degrees = if (std.math.isFinite(self.source_degrees)) std.math.clamp(self.source_degrees, 0, 5) else 0;
         return @tan(std.math.degreesToRadians(degrees));
+    }
+
+    pub fn clampedBiasTexels(self: SunShadowSettings) f32 {
+        return if (std.math.isFinite(self.bias_clamp_texels))
+            std.math.clamp(self.bias_clamp_texels, 0.05, 8)
+        else
+            (SunShadowSettings{}).bias_clamp_texels;
+    }
+
+    pub fn biasClampDepth(self: SunShadowSettings, fit: *const SunShadowFit) f32 {
+        return self.clampedBiasTexels() * fit.texel_world_size / fit.depth_span;
     }
 
     pub fn normalOffsetWorld(self: SunShadowSettings, fit: *const SunShadowFit) f32 {

@@ -358,6 +358,7 @@ test "the normal offset follows the fit and not the switch" {
         .view_proj = zm.identity(),
         .sun_dir = .{ 0, 1, 0 },
         .texel_world_size = 0.25,
+        .depth_span = 512,
         .resample_chord_squared = 1,
     };
     const off: scene.SunShadowSettings = .{ .enabled = false, .normal_offset_texels = 2 };
@@ -365,4 +366,37 @@ test "the normal offset follows the fit and not the switch" {
 
     try testing.expectEqual(@as(f32, 0.5), off.normalOffsetWorld(&fit));
     try testing.expectEqual(@as(f32, 0.5), on.normalOffsetWorld(&fit));
+}
+
+test "the bias clamp bounds caster displacement in world units" {
+    for ([_]f32{ 0.1, 4, 4000 }) |radius| {
+        for ([_]u32{ 256, 2048, 4096 }) |resolution| {
+            const fit = try SunShadowFit.compute(.{ .centre = scene_bounds.centre, .radius = radius }, unit(.{ 1, 0.1, 2 }), resolution);
+            for ([_]f32{ 0.05, 0.5, 3, 8 }) |texels| {
+                const settings: scene.SunShadowSettings = .{ .bias_clamp_texels = texels };
+                const world = texels * fit.texel_world_size;
+                const depth = settings.biasClampDepth(&fit);
+                try testing.expectApproxEqRel(world, depth * fit.depth_span, 1e-6);
+                const start = clipOf(fit, scene_bounds.centre);
+                const moved = clipOf(fit, scene_bounds.centre - fit.sun_dir * @as(res.Vec3, @splat(world)));
+                try testing.expectApproxEqAbs(depth, moved[2] - start[2], 2e-5);
+            }
+        }
+    }
+}
+
+test "the bias clamp stays positive and finite with authored settings" {
+    const fit = try SunShadowFit.compute(scene_bounds, .{ 0, 1, 0 }, map_size);
+    const cases = [_][2]f32{
+        .{ -1, 0.05 },               .{ 0, 0.05 },                 .{ 0.01, 0.05 }, .{ 0.05, 0.05 },
+        .{ 0.5, 0.5 },               .{ 8, 8 },                    .{ 100, 8 },     .{ std.math.nan(f32), 0.5 },
+        .{ std.math.inf(f32), 0.5 }, .{ -std.math.inf(f32), 0.5 },
+    };
+    try testing.expectEqual(@as(f32, 0.5), (scene.SunShadowSettings{}).clampedBiasTexels());
+    for (cases) |case| {
+        const settings: scene.SunShadowSettings = .{ .bias_clamp_texels = case[0] };
+        try testing.expectEqual(case[1], settings.clampedBiasTexels());
+        try testing.expectApproxEqRel(case[1] * fit.texel_world_size, settings.biasClampDepth(&fit) * fit.depth_span, 1e-6);
+        try testing.expect(settings.biasClampDepth(&fit) > 0);
+    }
 }

@@ -359,6 +359,7 @@ test "the normal offset follows the fit and not the switch" {
         .sun_dir = .{ 0, 1, 0 },
         .texel_world_size = 0.25,
         .depth_span = 512,
+        .lateral_span = 512,
         .resample_chord_squared = 1,
     };
     const off: scene.SunShadowSettings = .{ .enabled = false, .normal_offset_texels = 2 };

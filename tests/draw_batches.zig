@@ -296,3 +296,24 @@ test "a mirrored instance is its own batch even where every other key agrees" {
     try testing.expectEqual(@as(usize, 1), coalesced.len);
     try testing.expectEqual(@as(u32, 2), coalesced[0].instance_count);
 }
+
+test "a cut ends a run that would otherwise continue, and reports where it falls" {
+    const draws: [6]Plan.Draw = @splat(draw(.body, .cloth, .back));
+    const order = [_]u32{ 0, 1, 2, 3, 4, 5 };
+    var storage: [6]Plan.Batch = @splat(sentinel);
+    const built = try Plan.buildCut(&draws, &order, &.{ 1, 4 }, 3, &storage);
+    try testing.expectEqual(@as(usize, 4), built.batches.len);
+    try testing.expectEqual(@as(usize, 2), built.visible);
+    try testing.expectEqual(@as(usize, 1), built.cuts[0]);
+    try testing.expectEqual(@as(usize, 3), built.cuts[1]);
+    try testing.expectEqual(@as(u32, 3), built.batches[2].first_instance);
+    try testing.expectEqual(@as(u32, 1), built.batches[2].instance_count);
+}
+
+test "cuts out of order are refused before anything is written" {
+    const draws: [3]Plan.Draw = @splat(draw(.body, .cloth, .back));
+    const order = [_]u32{ 0, 1, 2 };
+    var storage: [3]Plan.Batch = @splat(sentinel);
+    try testing.expectError(error.CutsOutOfOrder, Plan.buildCut(&draws, &order, &.{ 2, 1 }, 3, &storage));
+    try testing.expectEqual(sentinel, storage[0]);
+}

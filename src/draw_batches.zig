@@ -63,7 +63,16 @@ pub const BuildError = error{
     // No output is written on this error. The caller can size for the worst
     // case with one batch per ordered draw or retain a measured scene capacity.
     BatchCapacityExceeded,
+
+    // More cut positions than `max_cuts`, or positions not ascending.
+    TooManyCuts,
+    CutsOutOfOrder,
 };
+
+// The most positions `buildCut` cuts runs at besides the visible boundary: the
+// two ends of a shadow bake's culled run and the end of its visible one need
+// three.
+pub const max_cuts = 4;
 
 // The types shared by one scene planner and its renderer consumer. MeshId and
 // MaterialId may be indices, generational handles or another equality-comparable
@@ -99,6 +108,9 @@ pub fn DrawBatches(comptime MeshId: type, comptime MaterialId: type) type {
             // the camera's boundary and are recorded by the passes that do not
             // use the camera.
             visible: usize,
+            // How many batches precede each cut `buildCut` was given, in the
+            // same order: a position in `order` becomes a position here.
+            cuts: [max_cuts]usize = @splat(0),
 
             pub fn visibleBatches(self: Batches) []Batch {
                 return self.batches[0..self.visible];
@@ -108,28 +120,50 @@ pub fn DrawBatches(comptime MeshId: type, comptime MaterialId: type) type {
         // Coalesces adjacent entries of `order` without changing their order.
         // `visible` is how many of its leading entries the camera can see, which
         // is where a run is cut whether or not the state continues across it.
-        //
-        // The function validates the complete input and output capacity before
-        // writing the first batch, so every error leaves `destination`
-        // untouched.
         pub fn build(
             draws: []const Draw,
             order: []const u32,
             visible: usize,
             destination: []Batch,
         ) BuildError!Batches {
+            return buildCut(draws, order, &.{visible}, visible, destination);
+        }
+
+        // As `build`, cutting a run at every position in `cuts` as well, so a
+        // pass that records a range of `order` other than the visible prefix
+        // finds whole batches at its ends. `cuts` is ascending.
+        //
+        // The function validates the complete input and output capacity before
+        // writing the first batch, so every error leaves `destination`
+        // untouched.
+        pub fn buildCut(
+            draws: []const Draw,
+            order: []const u32,
+            cuts: []const usize,
+            visible: usize,
+            destination: []Batch,
+        ) BuildError!Batches {
             if (order.len > std.math.maxInt(u32)) return error.TooManyInstances;
             if (visible > order.len) return error.VisibleCountOutOfRange;
+            if (cuts.len > max_cuts) return error.TooManyCuts;
+            for (cuts, 0..) |cut, index| {
+                if (cut > order.len) return error.VisibleCountOutOfRange;
+                if (index > 0 and cut < cuts[index - 1]) return error.CutsOutOfOrder;
+            }
 
             var batch_count: usize = 0;
             var visible_batches: usize = 0;
+            var cut_batches: [max_cuts]usize = @splat(0);
             var previous: ?Draw = null;
             for (order, 0..) |draw_index, index| {
                 if (draw_index >= draws.len) return error.DrawIndexOutOfRange;
                 const current = draws[draw_index];
-                if (previous == null or index == visible or !sameState(previous.?, current)) {
+                if (previous == null or index == visible or isCut(cuts, index) or !sameState(previous.?, current)) {
                     batch_count += 1;
                     if (index < visible) visible_batches += 1;
+                    for (cuts, 0..) |cut, k| {
+                        if (index < cut) cut_batches[k] += 1;
+                    }
                 }
                 previous = current;
             }
@@ -142,6 +176,7 @@ pub fn DrawBatches(comptime MeshId: type, comptime MaterialId: type) type {
                 var end = first + 1;
                 while (end < order.len and
                     end != visible and
+                    !isCut(cuts, end) and
                     sameState(representative, draws[order[end]]))
                     end += 1;
 
@@ -157,7 +192,14 @@ pub fn DrawBatches(comptime MeshId: type, comptime MaterialId: type) type {
                 first = end;
             }
             std.debug.assert(batch_index == batch_count);
-            return .{ .batches = destination[0..batch_count], .visible = visible_batches };
+            return .{ .batches = destination[0..batch_count], .visible = visible_batches, .cuts = cut_batches };
+        }
+
+        fn isCut(cuts: []const usize, index: usize) bool {
+            for (cuts) |cut| {
+                if (cut == index) return true;
+            }
+            return false;
         }
 
         fn sameState(a: Draw, b: Draw) bool {

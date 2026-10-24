@@ -47,6 +47,12 @@ pub const Key = struct {
     // this frame is passed as visible: a skinned or morphed mesh is bounded by
     // its bind pose, which is not where its vertices are.
     visible: bool = true,
+    // Whether the shadow map being baked this frame can hold this draw. A
+    // cascade covers a square of the scene, and a caster outside it is not
+    // drawn into it; the draws that do cast are ordered first in each half so
+    // the bake reads two runs rather than a filtered walk. True is always
+    // safe, and true for every draw is the order without the split.
+    caster: bool = true,
 };
 
 // What `order` wrote: every draw, with the visible ones first.
@@ -55,6 +61,10 @@ pub const Order = struct {
     // How many of `draws` the camera can see. The rest are behind it, in no
     // particular order, and exist for the passes that do not use the camera.
     visible: usize,
+    // How many solid casters open the visible half, and how many open the
+    // culled half after it: the two runs a shadow bake records.
+    visible_casters: usize,
+    culled_casters: usize,
 
     // The prefix a camera pass records. Solid draws come before blended ones
     // inside it, which is the invariant the recorder validates.
@@ -89,12 +99,13 @@ pub fn depthOf(eye: Vec3, centre: Vec3) f32 {
 // Writes every draw index in recording order and reports where the visible ones
 // end. The complete input is validated before the first index is written.
 //
-// Four regions, in this order: visible solid, visible blended, culled solid,
-// culled blended. Visible before culled so that a camera pass reads a prefix
-// rather than a filtered walk, and solid before blended inside each half so the
-// compositing rule holds in the half that composites. The culled half keeps the
-// same split for no reason a pass depends on; it costs one cursor and keeps the
-// two halves the same shape.
+// Six regions, in this order: visible solid casters, visible solid others,
+// visible blended, culled solid casters, culled solid others, culled blended.
+// Visible before culled so that a camera pass reads a prefix rather than a
+// filtered walk, and solid before blended inside each half so the compositing
+// rule holds in the half that composites. Casters first among the solid draws
+// of each half, so a bake reads a run from each; a blended draw casts nothing,
+// so it is never one.
 //
 // Solid draws keep the order they arrived in. Sorting them front to back would
 // reject some overdraw through early depth rejection, and it would also scatter
@@ -108,30 +119,40 @@ pub fn order(keys: []const Key, destination: []u32) OrderError!Order {
     if (keys.len > std.math.maxInt(u32)) return error.TooManyDraws;
     if (destination.len < keys.len) return error.OrderCapacityExceeded;
 
+    var visible_casters: usize = 0;
     var visible_solid: usize = 0;
     var visible_count: usize = 0;
+    var culled_casters: usize = 0;
     var culled_solid: usize = 0;
     for (keys) |key| {
         if (!std.math.isFinite(key.depth)) return error.DepthNotFinite;
         if (key.visible) {
             visible_count += 1;
-            if (key.layer == .solid) visible_solid += 1;
-        } else if (key.layer == .solid) culled_solid += 1;
+            if (key.layer == .solid) {
+                visible_solid += 1;
+                if (key.caster) visible_casters += 1;
+            }
+        } else if (key.layer == .solid) {
+            culled_solid += 1;
+            if (key.caster) culled_casters += 1;
+        }
     }
 
-    // The four cursors, each starting where the region before it ends.
-    var solid_index: usize = 0;
+    // The six cursors, each starting where the region before it ends.
+    var caster_index: usize = 0;
+    var solid_index: usize = visible_casters;
     var blended_index: usize = visible_solid;
-    var culled_index: usize = visible_count;
+    var culled_caster_index: usize = visible_count;
+    var culled_index: usize = visible_count + culled_casters;
     var culled_blended_index: usize = visible_count + culled_solid;
     for (keys, 0..) |key, index| {
         const cursor = if (key.visible)
             switch (key.layer) {
-                .solid => &solid_index,
+                .solid => if (key.caster) &caster_index else &solid_index,
                 .blended => &blended_index,
             }
         else switch (key.layer) {
-            .solid => &culled_index,
+            .solid => if (key.caster) &culled_caster_index else &culled_index,
             .blended => &culled_blended_index,
         };
         destination[cursor.*] = @intCast(index);
@@ -143,7 +164,12 @@ pub fn order(keys: []const Key, destination: []u32) OrderError!Order {
     // draws at the same depth keep the order they were submitted in, so a frame
     // that did not move records the same batches as the one before it.
     std.sort.block(u32, destination[visible_solid..visible_count], keys, farthestFirst);
-    return .{ .draws = destination[0..keys.len], .visible = visible_count };
+    return .{
+        .draws = destination[0..keys.len],
+        .visible = visible_count,
+        .visible_casters = visible_casters,
+        .culled_casters = culled_casters,
+    };
 }
 
 fn farthestFirst(keys: []const Key, a: u32, b: u32) bool {

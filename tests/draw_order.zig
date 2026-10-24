@@ -275,3 +275,21 @@ test "the output is a permutation whatever the mix of layer and visibility" {
     for (ordered.visibleDraws()) |index| try testing.expect(keys[index].visible);
     for (ordered.draws[ordered.visible..]) |index| try testing.expect(!keys[index].visible);
 }
+
+test "casters open the solid draws of each half, and blended draws are never casters" {
+    const keys = [_]scene.DrawKey{
+        .{ .layer = .solid, .depth = 1, .caster = false },
+        .{ .layer = .solid, .depth = 2 },
+        .{ .layer = .blended, .depth = 3 },
+        .{ .layer = .solid, .depth = 4, .visible = false },
+        .{ .layer = .solid, .depth = 5, .visible = false, .caster = false },
+        .{ .layer = .solid, .depth = 6, .visible = false },
+        .{ .layer = .blended, .depth = 7, .visible = false },
+    };
+    var storage: [keys.len]u32 = @splat(untouched);
+    const ordered = try scene.orderDraws(&keys, &storage);
+    try testing.expectEqual(@as(usize, 3), ordered.visible);
+    try testing.expectEqual(@as(usize, 1), ordered.visible_casters);
+    try testing.expectEqual(@as(usize, 2), ordered.culled_casters);
+    try testing.expectEqualSlices(u32, &.{ 1, 0, 2, 3, 5, 4, 6 }, ordered.draws);
+}

@@ -2,6 +2,7 @@ const ambient_occlusion = @import("ambient_occlusion.zig");
 const atmosphere = @import("atmosphere.zig");
 const bounds = @import("bounds.zig");
 const camera = @import("camera.zig");
+pub const clouds = @import("clouds.zig");
 const draw_batches = @import("draw_batches.zig");
 const draw_order = @import("draw_order.zig");
 const exposure = @import("exposure.zig");
@@ -12,6 +13,7 @@ const light = @import("light.zig");
 const local_shadow = @import("local_shadow.zig");
 const picking = @import("picking.zig");
 pub const probe_grid = @import("probe_grid.zig");
+const sun_cascades = @import("sun_cascades.zig");
 const sun_shadow = @import("sun_shadow.zig");
 const transform = @import("transform.zig");
 
@@ -85,6 +87,13 @@ pub const SunShadowSettings = sun_shadow.SunShadowSettings;
 pub const FitError = sun_shadow.FitError;
 pub const sun_resample_degrees = sun_shadow.resample_degrees;
 pub const sun_fade_seconds = sun_shadow.fade_seconds;
+
+pub const SunCascades = sun_cascades.SunCascades;
+pub const SunCascade = sun_cascades.Cascade;
+pub const SunCascadeSettings = sun_cascades.Settings;
+pub const SunCascadeImage = sun_cascades.Image;
+pub const max_sun_cascades = sun_cascades.max_cascades;
+pub const sun_recentre_share = sun_cascades.recentre_share;
 
 pub const Transform = transform.Transform;
 pub const rotationFromEulerZyx = transform.rotationFromEulerZyx;

@@ -113,6 +113,12 @@ pub const SunShadowFit = struct {
     // World distance from near (zero) to far, for converting caster bias to depth.
     depth_span: f32,
 
+    // World width of the square the map covers. Equal to `depth_span` for a
+    // fit around the scene sphere; a cascade is narrower than it is deep, and
+    // the lookup turns a penumbra sized in depth into map coordinates through
+    // the ratio of the two.
+    lateral_span: f32,
+
     // Unit, and the direction the fit was computed for.
     sun_dir: Vec3,
 
@@ -168,9 +174,83 @@ pub const SunShadowFit = struct {
             .view_proj = zm.mul(view, proj),
             .texel_world_size = 2 * radius / resolution,
             .depth_span = 2 * radius,
+            .lateral_span = 2 * radius,
             .sun_dir = .{ dir[0], dir[1], dir[2] },
             .resample_chord_squared = chord * chord,
         };
+    }
+
+    // A cascade: a square `width` wide across the sun's rays around `at`, as
+    // deep as the scene sphere along them, so whatever stands between the
+    // square and the sun anywhere in the scene still casts into it.
+    //
+    // The square's centre is snapped to whole texels of its own map in the
+    // sun's frame. Two cascades baked for the same sun around nearby points
+    // then rasterize every caster onto the same grid, and moving the centre
+    // moves no edge: Godot's cascades do the same, calling it the trick that
+    // stabilizes the shadow (renderer_scene_cull.cpp:2313). The basis is
+    // written out here rather than taken from `lookAtRh`, so the translation
+    // is the snapped value itself and not a product that rounds it again.
+    pub fn computeCascade(bounds: Sphere, sun_dir: Vec3, map_size: u32, width: f32, at: Vec3) FitError!SunShadowFit {
+        const resolution: f32 = @floatFromInt(map_size);
+        std.debug.assert(resolution > 2 * fit_margin_texels);
+
+        if (!(bounds.radius > min_fit_radius and bounds.radius < std.math.inf(f32)))
+            return error.DegenerateBounds;
+        if (!vec.finite(bounds.centre)) return error.DegenerateBounds;
+        if (!(width > min_fit_radius and width < std.math.inf(f32))) return error.DegenerateBounds;
+        if (!vec.finite(at)) return error.DegenerateBounds;
+
+        if (!vec.finite(sun_dir)) return error.DegenerateSunDirection;
+        const length_squared = @reduce(.Add, sun_dir * sun_dir);
+        if (length_squared < min_sun_length_squared) return error.DegenerateSunDirection;
+
+        const slack = resolution / (resolution - 2 * fit_margin_texels);
+        const half = width * slack / 2;
+        const radius = bounds.radius * slack;
+        const texel = 2 * half / resolution;
+
+        // The axes `lookToLh` in zmath 0.11.0-dev builds for an eye looking
+        // along -dir with this up, so the map is oriented as `compute`'s is.
+        const dir = zm.normalize3(zm.f32x4(sun_dir[0], sun_dir[1], sun_dir[2], 0));
+        const up = if (@abs(dir[1]) > up_fallback_limit)
+            zm.f32x4(1, 0, 0, 0)
+        else
+            zm.f32x4(0, 1, 0, 0);
+        const ax = zm.normalize3(zm.cross3(up, dir));
+        const ay = zm.normalize3(zm.cross3(dir, ax));
+
+        const point = zm.f32x4(at[0], at[1], at[2], 0);
+        const x = @round(zm.dot3(ax, point)[0] / texel) * texel;
+        const y = @round(zm.dot3(ay, point)[0] / texel) * texel;
+        const centre = zm.f32x4(bounds.centre[0], bounds.centre[1], bounds.centre[2], 0);
+        const eye_depth = zm.dot3(dir, centre)[0] + radius;
+
+        const view: zm.Mat = .{
+            zm.f32x4(ax[0], ay[0], dir[0], 0),
+            zm.f32x4(ax[1], ay[1], dir[1], 0),
+            zm.f32x4(ax[2], ay[2], dir[2], 0),
+            zm.f32x4(-x, -y, -eye_depth, 1),
+        };
+        const proj = zm.orthographicRh(2 * half, 2 * half, 0, 2 * radius);
+        const chord = 2 * @sin(std.math.degreesToRadians(resample_degrees) / 2);
+
+        return .{
+            .view_proj = zm.mul(view, proj),
+            .texel_world_size = texel,
+            .depth_span = 2 * radius,
+            .lateral_span = 2 * half,
+            .sun_dir = .{ dir[0], dir[1], dir[2] },
+            .resample_chord_squared = chord * chord,
+        };
+    }
+
+    // How far `point` stands from the middle of the map across the sun's
+    // rays, in world units along whichever map axis is farther: half the
+    // lateral span is the map's edge.
+    pub fn lateralDistance(self: *const SunShadowFit, point: Vec3) f32 {
+        const clip = zm.mul(zm.f32x4(point[0], point[1], point[2], 1), self.view_proj);
+        return @max(@abs(clip[0]), @abs(clip[1])) * self.lateral_span / 2;
     }
 
     // True when the sun has moved far enough that the baked map no longer lines

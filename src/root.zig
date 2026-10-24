@@ -70,8 +70,7 @@ pub const LocalShadowFit = local_shadow.LocalShadowFit;
 pub const LocalShadowError = local_shadow.LocalShadowError;
 pub const assignShadowLayers = local_shadow.assignLayers;
 pub const shadow_face_axes = local_shadow.face_axes;
-// The near plane of every local layer, which the lookup needs to turn a stored
-// depth back into a distance.
+// The minimum near plane for local shadow fits.
 pub const local_shadow_near = local_shadow.near;
 
 pub const Ray = picking.Ray;

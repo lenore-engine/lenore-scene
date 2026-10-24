@@ -56,6 +56,7 @@ pub const Light = struct {
     colour: Vec3,
     intensity: f32,
     kind: Kind,
+    shadow_near: f32 = 0.025,
 
     pub const Kind = union(enum) {
         // Unit, and pointing the way the light travels.
@@ -145,6 +146,14 @@ pub const Light = struct {
         };
     }
 
+    pub fn withFixtureClearance(self: Light, clearance: f32) Light {
+        var light = self;
+        // Chosen clearance margin: one centimetre beyond the fixture's vertices.
+        const margin = 0.01;
+        light.shadow_near = @max(light.shadow_near, clearance + margin);
+        return light;
+    }
+
     // The same light placed by a node transform. This is the step between the
     // document, where a light is stated in the space of the node that references
     // it, and the scene, where it has to be in world space.
@@ -163,6 +172,7 @@ pub const Light = struct {
         return .{
             .colour = self.colour,
             .intensity = self.intensity,
+            .shadow_near = self.shadow_near,
             .kind = switch (self.kind) {
                 .directional => |direction| .{ .directional = try normalize(rotate(direction, model)) },
                 .point => |source| .{ .point = .{

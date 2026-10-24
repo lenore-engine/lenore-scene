@@ -34,22 +34,8 @@ const Vec3 = resources.Vec3;
 // sampler reads as lit.
 const fit_margin_texels: f32 = 2;
 
-// The nearest a caster may be to the light and still be drawn into its map.
-// Godot uses this distance for both kinds, `z_near = MIN(0.025f, radius)`, in
-// RendererSceneCull::_light_instance_update_shadow,
-// servers/rendering/renderer_scene_cull.cpp:2483 (point) and :2574 (spot), at
-// godotengine/godot 81ab961f9106.
-//
-// It is also why a lamp's own shade has to stand clear of the light, or be
-// left out of the casters: anything nearer than this is clipped from the map,
-// and anything just beyond it shadows the whole room.
+// Minimum near plane for a light with no fixture clearance.
 pub const near: f32 = 0.025;
-
-// A range at or below this leaves no depth between the near plane and itself.
-// zmath 0.11.0-dev `perspectiveFovRh` asserts that far and near differ by more
-// than 0.001, and ReleaseFast removes that assert rather than reporting it; at
-// twice the near distance they differ by 0.025.
-const min_range: f32 = 2 * near;
 
 // DECIDE: the widest spot cone that casts a shadow, from the axis. One
 // perspective projection cannot reach 90 degrees, and towards it the texels at
@@ -94,7 +80,7 @@ pub const LocalShadowError = error{
     // sun's fit.
     NotLocal,
 
-    // The range is not above `min_range`, or is not finite.
+    // The range is not above twice the near plane, or either is not finite.
     RangeTooShort,
 
     // The spot's outer angle is outside what one projection covers.
@@ -118,9 +104,13 @@ pub const LocalShadowFit = struct {
     // texel grows with distance, so the lookup multiplies this by the
     // fragment's distance from the light.
     texel_slope: f32,
+    near: f32,
 
     // `light` is in world space, as `Light.placed` leaves it.
     pub fn compute(light: Light, map_size: u32) LocalShadowError!LocalShadowFit {
+        const shadow_near = @max(near, light.shadow_near);
+        if (!(light.shadow_near >= 0 and light.shadow_near < std.math.inf(f32)))
+            return error.RangeTooShort;
         const resolution: f32 = @floatFromInt(map_size);
         std.debug.assert(resolution > 2 * fit_margin_texels);
         // The projection grows to keep the margin outside what it has to
@@ -130,17 +120,18 @@ pub const LocalShadowFit = struct {
         switch (light.kind) {
             .directional => return error.NotLocal,
             .point => |source| {
-                try checkRange(source.range);
+                try checkRange(source.range, shadow_near);
                 if (!vec.finite(source.position)) return error.DegenerateLight;
                 // A face covers a tangent of one either side of its axis,
                 // which is the 90 degrees that tiles the sphere.
                 const tan_half = slack;
-                const proj = perspective(tan_half, source.range);
+                const proj = perspective(tan_half, shadow_near, source.range);
                 const eye = point4(source.position);
                 var fit: LocalShadowFit = .{
                     .view_proj = undefined,
                     .layers = 6,
                     .texel_slope = 2 * tan_half / resolution,
+                    .near = shadow_near,
                 };
                 for (&fit.view_proj, face_axes, face_ups) |*matrix, axis, up| {
                     matrix.* = zm.mul(zm.lookToRh(eye, direction4(axis), direction4(up)), proj);
@@ -148,7 +139,7 @@ pub const LocalShadowFit = struct {
                 return fit;
             },
             .spot => |source| {
-                try checkRange(source.range);
+                try checkRange(source.range, shadow_near);
                 if (!vec.finite(source.position) or !vec.finite(source.direction)) return error.DegenerateLight;
                 if (@reduce(.Add, source.direction * source.direction) < min_direction_length_squared)
                     return error.DegenerateLight;
@@ -169,8 +160,9 @@ pub const LocalShadowFit = struct {
                     .view_proj = @splat(zm.identity()),
                     .layers = 1,
                     .texel_slope = 2 * tan_half / resolution,
+                    .near = shadow_near,
                 };
-                fit.view_proj[0] = zm.mul(view, perspective(tan_half, source.range));
+                fit.view_proj[0] = zm.mul(view, perspective(tan_half, shadow_near, source.range));
                 return fit;
             },
         }
@@ -200,13 +192,13 @@ pub fn assignLayers(fits: []const LocalShadowFit, capacity: u32, first_layer: []
     return used;
 }
 
-// Square, from `near` to the light's range.
-fn perspective(tan_half: f32, range: f32) zm.Mat {
-    return zm.perspectiveFovRh(2 * std.math.atan(tan_half), 1, near, range);
+// Square, from the light's near plane to its range.
+fn perspective(tan_half: f32, shadow_near: f32, range: f32) zm.Mat {
+    return zm.perspectiveFovRh(2 * std.math.atan(tan_half), 1, shadow_near, range);
 }
 
-fn checkRange(range: f32) LocalShadowError!void {
-    if (!(range > min_range and range < std.math.inf(f32))) return error.RangeTooShort;
+fn checkRange(range: f32, shadow_near: f32) LocalShadowError!void {
+    if (!(range > 2 * shadow_near and range < std.math.inf(f32))) return error.RangeTooShort;
 }
 
 fn point4(v: Vec3) zm.Vec {

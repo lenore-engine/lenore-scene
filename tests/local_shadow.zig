@@ -153,3 +153,27 @@ test "layers go in order, and a light that does not fit leaves room for one that
     try testing.expectEqual(@as(u32, 8), scene.assignShadowLayers(&fits, 8, &first));
     try testing.expectEqualSlices(?u32, &.{ 0, 6, null, 7 }, &first);
 }
+
+test "fixture clearance sets each fit's near and clips nearer receivers" {
+    const spot = (try spotLight(.{ 0, -1, 0 }, cone)).withFixtureClearance(0.42);
+    const point = (try Light.point(.{ 1, 1, 1 }, 10, source, range)).withFixtureClearance(0.08);
+    const spot_fit = try LocalShadowFit.compute(spot, map_size);
+    const point_fit = try LocalShadowFit.compute(point, map_size);
+    try testing.expectApproxEqAbs(@as(f32, 0.43), spot_fit.near, tolerance);
+    try testing.expectApproxEqAbs(@as(f32, 0.09), point_fit.near, tolerance);
+    try testing.expectApproxEqAbs(@as(f32, 0), project(spot_fit.view_proj[0], at(.{ 0, -1, 0 }, spot_fit.near))[2], tolerance);
+    for (scene.shadow_face_axes, point_fit.view_proj) |axis, matrix| {
+        try testing.expectApproxEqAbs(@as(f32, 0), project(matrix, at(axis, point_fit.near))[2], tolerance);
+        try testing.expect(project(matrix, at(axis, point_fit.near / 2))[2] < 0);
+        try testing.expectApproxEqAbs(@as(f32, 1), project(matrix, at(axis, range))[2], tolerance);
+    }
+    try testing.expect(project(spot_fit.view_proj[0], at(.{ 0, -1, 0 }, spot_fit.near / 2))[2] < 0);
+    const empty = (try Light.point(.{ 1, 1, 1 }, 1, source, range)).withFixtureClearance(0);
+    try testing.expectEqual(@as(f32, near), (try LocalShadowFit.compute(empty, map_size)).near);
+    try testing.expectError(error.RangeTooShort, LocalShadowFit.compute(point.withFixtureClearance(range / 2), map_size));
+    var invalid = point;
+    invalid.shadow_near = std.math.nan(f32);
+    try testing.expectError(error.RangeTooShort, LocalShadowFit.compute(invalid, map_size));
+    invalid.shadow_near = std.math.inf(f32);
+    try testing.expectError(error.RangeTooShort, LocalShadowFit.compute(invalid, map_size));
+}
